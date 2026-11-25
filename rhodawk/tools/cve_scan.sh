@@ -78,10 +78,11 @@ nuclei "${INPUT_ARG[@]}" \
 if [ -s "$OUT_DIR/nuclei_cve.jsonl" ]; then
   n=$(wc -l < "$OUT_DIR/nuclei_cve.jsonl" | tr -d ' ')
   hit "nuclei: $n CVE finding(s)"
+  # Audit R-15: path via sys.argv[1], never interpolated into the code string
   python3 -c "
-import json
+import json, sys
 seen=set()
-for line in open('$OUT_DIR/nuclei_cve.jsonl'):
+for line in open(sys.argv[1]):
   try: d=json.loads(line)
   except: continue
   cve=(d.get('info',{}).get('classification',{}) or {}).get('cve-id') or d.get('template-id')
@@ -91,7 +92,7 @@ for line in open('$OUT_DIR/nuclei_cve.jsonl'):
   if k in seen: continue
   seen.add(k)
   print(f'  {sev:8s} {cve}  {host}')
-" >&2
+" "$OUT_DIR/nuclei_cve.jsonl" >&2
 else
   ok "nuclei: no CVE matches"
 fi

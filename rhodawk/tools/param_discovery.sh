@@ -51,14 +51,15 @@ if _have arjun; then
     arjun -i "$LIST" -t 10 -oJ "$OUT_DIR/arjun.json" 2>/dev/null || true
   fi
   if [ -s "$OUT_DIR/arjun.json" ]; then
+    # Audit R-15: path via sys.argv[1], never interpolated into the code string
     python3 -c "
-import json
-d = json.load(open('$OUT_DIR/arjun.json'))
+import json, sys
+d = json.load(open(sys.argv[1]))
 for ep, info in d.items():
     params = info.get('params', [])
     if params:
         print(f'{ep}  →  ' + ','.join(params))
-" > "$OUT_DIR/arjun_summary.txt" || true
+" "$OUT_DIR/arjun.json" > "$OUT_DIR/arjun_summary.txt" || true
     n=$(wc -l < "$OUT_DIR/arjun_summary.txt" | tr -d ' ')
     [ "$n" -gt 0 ] && hit "arjun: $n endpoint(s) had hidden params" || ok "arjun: no hits"
   fi

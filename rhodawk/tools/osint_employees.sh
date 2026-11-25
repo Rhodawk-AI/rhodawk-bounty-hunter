@@ -103,13 +103,14 @@ fi
 
 HARVESTER_JSON="$OUT_DIR/${HARVESTER_BASENAME}.json"
 if [ -f "$HARVESTER_JSON" ]; then
+    # Audit R-15: path via sys.argv[1], never interpolated into the code string
     python3 -c "
-import json
-with open('$HARVESTER_JSON') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     data = json.load(f)
 for email in data.get('emails', []):
     print(email)
-" | sort -u > "$EMAILS"
+" "$HARVESTER_JSON" | sort -u > "$EMAILS"
     EMAIL_COUNT=$(wc -l < "$EMAILS" | tr -d ' ')
     log_ok "Found $EMAIL_COUNT unique emails -> $EMAILS"
 else

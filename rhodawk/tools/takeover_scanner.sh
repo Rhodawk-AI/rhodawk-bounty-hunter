@@ -49,7 +49,8 @@ if _have dnsreaper; then
   log "dnsReaper on $(wc -l < "$INPUT" | tr -d ' ') subdomains..."
   dnsreaper file --file "$INPUT" --out "$OUT_DIR/dnsreaper.json" --out-format json 2>/dev/null || true
   if [ -s "$OUT_DIR/dnsreaper.json" ]; then
-    n=$(python3 -c "import json; d=json.load(open('$OUT_DIR/dnsreaper.json')); print(len(d))" 2>/dev/null || echo 0)
+    # Audit R-15: path via sys.argv[1], never interpolated into the code string
+    n=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d))" "$OUT_DIR/dnsreaper.json" 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && hit "dnsReaper: $n candidate(s)" || ok "dnsReaper: clean"
   fi
 fi
