@@ -35,7 +35,8 @@ Behaviour (fail-closed, deterministic -- no judgment calls):
     -> ``exit 2`` with a ``SCOPE_HOOK_BLOCK`` message on stderr (Claude Code
     surfaces stderr + exit 2 back to the model as a tool-call block).
 
-Exit codes: ``0`` allow, ``2`` block, ``1`` internal usage error.
+Exit codes: ``0`` allow, ``2`` block (including an unparseable or non-object
+stdin payload — fail closed), ``1`` internal usage error.
 Note: this gate is deliberately stricter than the MCP tool contract -- the
 caller-supplied ``scope_domains`` path does NOT satisfy the hook. The
 PreToolUse hook is the outermost boundary, so it accepts only the
@@ -307,18 +308,24 @@ def main(argv=None) -> int:
     except Exception:  # noqa: BLE001
         stdin_data = ""
     if stdin_data.strip():
+        # FAIL CLOSED (R-11): a hook payload we cannot parse is NOT treated as
+        # a harmless read-only call — the only safe assumption is that it may
+        # be an active network tool whose scope we cannot verify, so it is
+        # blocked (exit 2) with an actionable message. The previous fail-open
+        # behavior let malformed JSON bypass the scope gate entirely.
         try:
             parsed = json.loads(stdin_data)
-            if isinstance(parsed, dict):
-                payload = parsed
-            else:
-                print(f"{BLOCK_PREFIX}: malformed hook payload (not an object); "
-                      "treating call as non-target", file=sys.stderr)
-                return 0
         except ValueError:
-            print(f"{BLOCK_PREFIX}: unparseable hook payload; treating call "
-                  "as non-target", file=sys.stderr)
-            return 0
+            print(f"{BLOCK_PREFIX}: unparseable hook payload (invalid JSON) — "
+                  "blocked fail-closed. Ensure the PreToolUse hook receives a "
+                  "JSON object with tool_name/tool_input.", file=sys.stderr)
+            return 2
+        if not isinstance(parsed, dict):
+            print(f"{BLOCK_PREFIX}: malformed hook payload (expected a JSON "
+                  "object, got " + type(parsed).__name__ + ") — blocked "
+                  "fail-closed.", file=sys.stderr)
+            return 2
+        payload = parsed
 
     tool_name = args.tool or str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
