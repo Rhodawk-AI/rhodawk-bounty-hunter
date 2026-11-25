@@ -84,6 +84,11 @@ class TestWriteReportEvidenceDelimited:
                     "status": "validated_finding",
                     "verifier": {"confirmed": True, "oracle": "test", "trace": []},
                     "evidence_links": ["sqlmap_confirmed.txt"],
+                    # sprint 2 (R-05): the report gate also requires linked
+                    # evidence + scope enforcement on the validation payload
+                    "evidence_linked": True,
+                    "evidence_id": "EV-TEST",
+                    "scope_enforced": True,
                 }
             )
         )

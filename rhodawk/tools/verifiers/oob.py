@@ -31,13 +31,17 @@ def payloads_for(domain: str, vuln_class: str) -> dict:
     return oob_payloads(domain, [cls])
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     raw_class = str(finding.get("vuln_class") or finding.get("vuln_type") or "ssrf")
     cls = _CLASS_MAP.get(raw_class.lower(), "ssrf")
 
     payloads = finding.get("oob_payloads")
     interactions = finding.get("oob_interactions")
 
+    # scope_checker/allow_localhost_testing accepted for dispatcher uniformity;
+    # this oracle correlates recorded interactions and sends no traffic itself.
+    del scope_checker, allow_localhost_testing
     if not payloads:
         return skipped(cls, "no oob_payloads recorded (inject payloads_for() first)")
     if not interactions:

@@ -48,14 +48,19 @@ FINDINGS_DIR = os.path.join(_REPO, "findings")
 
 
 def _scope_checker(domains: list[str]):
+    """Build the workers' ScopeChecker — or raise.
+
+    Missing scope config (empty list) still returns None, but every caller
+    treats None as fail-closed (verification is refused, not unscoped). An
+    INVALID config is never swallowed into None: ScopeError propagates so a
+    misconfigured pattern list surfaces at dispatch time instead of silently
+    disabling scope enforcement for the whole wave.
+    """
     if not domains:
         return None
-    try:
-        from tools.scope_checker import ScopeChecker
+    from tools.scope_checker import ScopeChecker
 
-        return ScopeChecker(domains)
-    except Exception:  # noqa: BLE001
-        return None
+    return ScopeChecker(domains)
 
 
 def _first_param(url: str) -> str | None:
@@ -84,7 +89,7 @@ def finding_from_lead(lead: dict, target: str) -> dict:
     return finding
 
 
-def run_worker(lead: dict, target: str, scope_domains: list[str]) -> dict:
+def run_worker(lead: dict, target: str, scope_checker=None) -> dict:
     """One ephemeral, single-objective worker. Runs in a thread."""
     lead_id = lead["id"]
     skill = lead.get("skill", "")
@@ -102,7 +107,7 @@ def run_worker(lead: dict, target: str, scope_domains: list[str]) -> dict:
     try:
         result = verify_finding_programmatic(
             finding,
-            scope_checker=_scope_checker(scope_domains),
+            scope_checker=scope_checker,
             session_dir=session_dir,
             write_dir=session_dir,
         )
@@ -146,6 +151,21 @@ def _safe(s: str) -> str:
 def coordinate(target, *, recon_dir=None, workers=6, max_leads=0,
                skills=None, scope_domains=None, do_ingest=False) -> dict:
     scope_domains = scope_domains or []
+    # Fail closed BEFORE dispatch: an invalid scope config raises ScopeError
+    # here (loudly, to the CLI), and a wave with no scope at all refuses to
+    # verify anything — the verifiers themselves are fail-closed too, so
+    # dispatching without scope could only ever park every lead.
+    try:
+        checker = _scope_checker(scope_domains)
+    except Exception as exc:  # noqa: BLE001 - re-raised as the wave's verdict
+        return {"target": target, "dispatched": 0, "results": [],
+                "summary": {"error": f"scope config unusable: {exc}"},
+                "scope_error": str(exc)}
+    if checker is None:
+        return {"target": target, "dispatched": 0, "results": [],
+                "summary": {"error": "no scope configured (--scope-domain) — "
+                                     "refusing to verify (fail closed)"},
+                "scope_error": "no scope configured"}
     if do_ingest and recon_dir:
         lead_board.ingest(target, recon_dir)
 
@@ -165,7 +185,7 @@ def coordinate(target, *, recon_dir=None, workers=6, max_leads=0,
 
     results = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = {pool.submit(run_worker, l, target, scope_domains): l for l in leads}
+        futs = {pool.submit(run_worker, l, target, checker): l for l in leads}
         for fut in as_completed(futs):
             try:
                 results.append(fut.result())

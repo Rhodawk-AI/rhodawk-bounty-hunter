@@ -32,6 +32,30 @@ def _is_blocked_redirect_target(hostname: str) -> bool:
     )
 
 
+def is_blocked_host(hostname: str) -> bool:
+    """Public alias for the SSRF host blocklist so every consumer (verifier
+    spine, PoC bundler, audit tooling) shares ONE canonical implementation
+    instead of re-deriving a divergent copy.
+
+    Blocks: empty/unparseable hosts, localhost (any case), cloud metadata
+    hosts, and — after resolution — private / loopback / link-local /
+    reserved / multicast addresses (RFC1918, 127.0.0.0/8, 169.254.0.0/16,
+    fd00::/8 unique-local, ...)."""
+    return _is_blocked_redirect_target(hostname)
+
+
+def initial_host_blocked(url: str) -> bool:
+    """True when a URL's INITIAL host is on the SSRF blocklist.
+
+    safe_urlopen historically validated only redirect hops; the first request
+    went out unchecked. Verifiers and the PoC bundler now call this before
+    opening any socket, closing the hop-0 SSRF seam."""
+    try:
+        return is_blocked_host(urlparse(url).hostname)
+    except ValueError:
+        return True
+
+
 def _one_hop(req: urllib.request.Request, timeout: float, **kwargs):
     # OpenerDirector.open() (used below) does NOT accept a context=
     # kwarg — only the module-level urllib.request.urlopen() does. Callers

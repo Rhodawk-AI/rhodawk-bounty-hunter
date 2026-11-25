@@ -18,7 +18,8 @@ VULN_CLASS = "open-redirect"
 _ATTACKER_HOST = "evil.example"
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     url = finding_url(finding)
     param = finding.get("param")
     if not url:
@@ -28,7 +29,8 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
     payload = str(finding.get("payload") or f"https://{attacker}/")
     test_url = set_param(url, param, payload) if param else url
 
-    ex, _ = fetch(test_url, scope_checker=scope_checker, note="open-redirect probe")
+    ex, _ = fetch(test_url, scope_checker=scope_checker,
+                  allow_localhost_testing=allow_localhost_testing, note="open-redirect probe")
     trace = [ex]
 
     if ex.status not in (301, 302, 303, 307, 308):

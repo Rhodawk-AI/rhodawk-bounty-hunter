@@ -28,7 +28,84 @@ try:  # pragma: no cover - depends on local install
 except ImportError:
     _SSL_CTX = ssl.create_default_context()
 
+try:  # package import (pythonpath=rhodawk)
+    from tools.safe_http import initial_host_blocked  # noqa: E402
+except ImportError:  # standalone execution: python3 tools/verifiers/base.py
+    import os as _os, sys as _sys
+
+    _TOOLS = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _TOOLS not in _sys.path:
+        _sys.path.insert(0, _TOOLS)
+    from safe_http import initial_host_blocked  # noqa: E402
+
 USER_AGENT = "rhodawk-bounty-hunter/verifier"
+
+# Hosts treated as loopback for the explicit test seam. Anything else on the
+# SSRF blocklist (RFC1918, link-local, cloud metadata, ULA) is NEVER allowed
+# through the seam — only a real loopback server running on the operator's own
+# machine may use it.
+_LOOPBACK_HOST_SUFFIX = ".localhost"
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    host = (hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in _LOOPBACK_HOSTS or host.endswith(_LOOPBACK_HOST_SUFFIX):
+        return True
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def preflight_blocked(
+    url: str,
+    scope_checker=None,
+    allow_localhost_testing: bool = False,
+) -> str | None:
+    """The single hop-0 gate for every verifier network action.
+
+    Returns None when the fetch may proceed, or a human-readable block reason.
+    Applied BEFORE any socket is opened (and before a headless browser is
+    launched), so a blocked URL costs 0 packets:
+
+      1. SSRF blocklist — loopback / RFC1918 / link-local / cloud metadata /
+         reserved / multicast hosts are refused outright (169.254.169.254,
+         127.0.0.1, fd00::/8, ...). No seam bypasses this except the explicit
+         loopback test allowance below.
+      2. Scope gate — a valid scope_checker is REQUIRED (fail closed). The only
+         exception is ``allow_localhost_testing=True`` + a loopback target,
+         which exists so unit tests can exercise fetch()/capture() against a
+         local http.server without a compiled manifest. The seam never applies
+         to a public host: a missing scope checker still blocks those.
+      3. Manifest scope — when a checker is present, the URL must be in scope.
+    """
+    host = ""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+
+    if allow_localhost_testing and _is_loopback_host(host):
+        return None  # explicit unit-test seam: loopback targets only
+
+    if initial_host_blocked(url):
+        return (
+            f"blocked: initial host is loopback/private/metadata "
+            f"({host or 'unparseable URL'}) — SSRF guard (hop 0)"
+        )
+    if scope_checker is None:
+        return (
+            "blocked: no scope_checker provided — the verifier spine fails "
+            "closed (build one via ScopeChecker/ScopeChecker.from_manifest)"
+        )
+    if not scope_checker.is_in_scope(url):
+        return f"blocked: {url} is out of scope"
+    return None
 
 
 @dataclass
@@ -114,19 +191,33 @@ def fetch(
     scope_checker=None,
     note: str = "",
     max_body: int = 65536,
+    allow_localhost_testing: bool = False,
 ) -> tuple[HttpExchange, bytes]:
     """Single-hop fetch (no redirect following) returning a trace entry + body.
 
-    Redirects are never followed, so a target cannot 302 us into cloud metadata
-    or an RFC1918 host — the SSRF seam `safe_http` guards. When a scope_checker
-    is supplied, an out-of-scope URL is refused before any socket is opened.
+    Hop 0 is gated by ``preflight_blocked`` BEFORE any socket is opened: the
+    SSRF blocklist (loopback / RFC1918 / link-local / cloud metadata) applies
+    unconditionally, and a valid ``scope_checker`` is REQUIRED — with none
+    supplied every URL is refused (fail closed). A blocked fetch never opens a
+    socket; it returns an exchange whose note carries the block reason and an
+    empty body, so callers keep their normal trace handling.
+
+    The only seam is ``allow_localhost_testing=True`` together with a loopback
+    target — for unit tests against a local http.server. It never permits a
+    public host without a scope checker.
+
+    Redirects are never followed, so a target cannot 302 us into cloud
+    metadata or an RFC1918 host either (the SSRF seam `safe_http` guards).
     """
     headers = dict(headers or {})
     headers.setdefault("User-Agent", USER_AGENT)
 
-    if scope_checker is not None and not scope_checker.is_in_scope(url):
-        ex = HttpExchange(method, url, None, headers, {}, "", 0.0,
-                          note or "blocked: out of scope")
+    block = preflight_blocked(url, scope_checker, allow_localhost_testing)
+    if block:
+        # The block reason is the signal here — the caller's note, if any, is
+        # kept as a prefix but never REPLACES the reason in the trace.
+        block_note = f"{note} [{block}]" if note else block
+        ex = HttpExchange(method, url, None, headers, {}, "", 0.0, block_note)
         return ex, b""
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)

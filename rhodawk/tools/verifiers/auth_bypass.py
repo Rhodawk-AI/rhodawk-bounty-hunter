@@ -18,7 +18,8 @@ _LOGIN_SIGNALS = ("login", "sign in", "sign-in", "password", "unauthorized",
                   "forbidden", "please log in")
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     url = finding_url(finding)
     if not url:
         return skipped(VULN_CLASS, "no url in finding")
@@ -31,7 +32,8 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
         )
 
     # Deliberately send NO auth material: this is the unauthenticated attacker.
-    ex, body = fetch(url, scope_checker=scope_checker, note="anon forced-browse")
+    ex, body = fetch(url, scope_checker=scope_checker,
+                     allow_localhost_testing=allow_localhost_testing, note="anon forced-browse")
     trace = [ex]
 
     if ex.status != 200:

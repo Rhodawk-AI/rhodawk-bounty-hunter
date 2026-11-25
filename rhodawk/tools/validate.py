@@ -867,6 +867,66 @@ def write_validation_json(output_dir: str, info: dict, gate_notes: dict) -> str:
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def _load_auto_scope_checker(finding: dict):
+    """Build a ScopeChecker for the non-interactive auto path.
+
+    Resolution order (first hit wins, mirroring the hook's manifest authority):
+      1. ``RHODAWK_SCOPE_MANIFEST`` env var — hash-verified manifest;
+      2. ``<findings>/../recon/<target>/scope/compiled_scope.json`` — the
+         target-derived manifest written by scope-compile;
+      3. ``~/.rhodawk/config.json`` ``scope_domains`` /
+         ``scope_excluded_domains`` (the same source
+         ``rtw_adapter.load_scope_from_config`` feeds the runtimes).
+
+    Returns None when nothing usable is configured; the caller then proceeds
+    fail-closed (the verifier refuses to send traffic without scope).
+    """
+    try:
+        from tools.scope_checker import ScopeChecker, ScopeError
+    except ImportError:  # script execution: resolve the package dir
+        import sys as _sys
+
+        _pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _pkg not in _sys.path:
+            _sys.path.insert(0, _pkg)
+        from tools.scope_checker import ScopeChecker, ScopeError
+
+    manifest = os.environ.get("RHODAWK_SCOPE_MANIFEST", "").strip()
+    if not manifest:
+        target = str(finding.get("target") or "")
+        try:
+            from tools.rtw_adapter import manifest_path, host_key
+
+            candidate = manifest_path(host_key(target) if target else target)
+            if candidate.is_file():
+                manifest = str(candidate)
+        except Exception:  # noqa: BLE001 - a missing adapter is not fatal here
+            manifest = ""
+    if manifest:
+        try:
+            return ScopeChecker.from_manifest(manifest)
+        except (ValueError, OSError) as exc:
+            print(f"  [-] scope manifest unusable ({exc}) — continuing without scope",
+                  file=sys.stderr)
+            return None
+
+    domains, excluded = [], []
+    try:
+        from tools.rtw_adapter import load_scope_from_config
+
+        domains, excluded = load_scope_from_config()
+    except Exception:  # noqa: BLE001
+        domains, excluded = [], []
+    if not domains:
+        return None
+    try:
+        return ScopeChecker(domains, excluded_domains=excluded or None)
+    except ScopeError as exc:
+        print(f"  [-] invalid scope config ({exc}) — continuing without scope",
+              file=sys.stderr)
+        return None
+
+
 def _run_auto(finding_path: str, output_dir: str) -> int:
     """Non-interactive path: run the programmatic verifier gate on a finding
     JSON and persist validation.json. This is what the swarm coordinator, the
@@ -884,9 +944,20 @@ def _run_auto(finding_path: str, output_dir: str) -> int:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "findings",
         "auto-" + datetime.now().strftime("%Y%m%d-%H%M%S"),
     )
+
+    # Scope is not optional on the auto path: load the same scope the harness
+    # runtimes inherit (config.json scope_domains / manifest overrides) and
+    # gate the verifier run with it. No scope configured -> the verifier spine
+    # fails closed inside verify_finding_programmatic (blocked fetches), and
+    # the result is never report-ready.
+    scope_checker = _load_auto_scope_checker(finding)
+
     result = verify_finding_programmatic(
-        finding, session_dir=out_dir, write_dir=out_dir,
+        finding, scope_checker=scope_checker, session_dir=out_dir, write_dir=out_dir,
     )
+    if not scope_checker:
+        print("  [-] no scope configured (config.json scope_domains or "
+              "RHODAWK_SCOPE_MANIFEST) — verifier blocked, report not ready")
     status = result["status"]
     color = GREEN if status == "validated_finding" else YELLOW
     print(f"  {BOLD}{color}status: {status}{RESET}  (gate: {result['gate_verdict']})")

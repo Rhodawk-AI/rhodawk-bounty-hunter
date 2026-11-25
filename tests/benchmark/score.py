@@ -45,9 +45,18 @@ def _wait_port(host: str, port: int, timeout: float = 8.0) -> bool:
 
 
 def _confirmed(finding: dict) -> tuple[bool, dict]:
-    """Run the real gate; 'confirmed' == report-ready (validated_finding)."""
-    res = verify_finding_programmatic(finding, log_research=False)
-    return res.get("status") == "validated_finding", res
+    """Run the real gate; 'confirmed' == report-ready (validated_finding).
+
+    The benchmark lab runs on 127.0.0.1 (vuln_target.py / serve.py), so the
+    explicit loopback testing seam is required — the same fail-closed hop-0
+    gate production runs use would otherwise block every probe."""
+    res = verify_finding_programmatic(finding, log_research=False,
+                                      allow_localhost_testing=True)
+    # Sprint 2 hardened the status: validated_finding now REQUIRES linked
+    # evidence (session_dir), which a session-less benchmark run can never
+    # have. Oracle quality is what this benchmark measures, and that is
+    # exactly `technically_confirmed` (the oracle fired, chain aside).
+    return res.get("technically_confirmed") is True, res
 
 
 def run_benchmark(host: str = "127.0.0.1",
