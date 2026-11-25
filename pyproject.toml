@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rhodawk-bounty-hunter"
+version = "2.0.0"
+description = "RhodawkAI Bounty Hunter — AI-powered bug bounty hunting, recon to report, in your terminal."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "RhodawkAI" }]
+keywords = ["security", "bug-bounty", "recon", "pentest", "ai-agent", "mcp", "rhodawkai"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: POSIX",
+    "Environment :: Console",
+    "Topic :: Security",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "requests>=2.34.2",
+    "mcp>=2.2.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4.2"]
+
+[project.urls]
+Homepage = "https://github.com/Rhodawk-AI/rhodawk-bounty-hunter"
+Repository = "https://github.com/Rhodawk-AI/rhodawk-bounty-hunter"
+Issues = "https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/issues"
+
+[project.scripts]
+rhodawk = "rhodawk.__main__:main"
+rhodawk-agent = "rhodawk.__main__:agent_main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rhodawk*"]
+
+[tool.setuptools.package-data]
+rhodawk = ["**/*"]

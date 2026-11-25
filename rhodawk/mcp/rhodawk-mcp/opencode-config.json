@@ -1,0 +1,12 @@
+{
+  "mcp": {
+    "rhodawk": {
+      "type": "local",
+      "enabled": true,
+      "command": ["rhodawk", "mcp", "serve"],
+      "environment": {
+        "RHODAWK_MCP_APPROVE": "0"
+      }
+    }
+  }
+}

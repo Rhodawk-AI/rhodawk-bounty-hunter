@@ -1,0 +1,37 @@
+{
+  "name": "@rhodawk-ai/bounty-hunter",
+  "version": "2.0.0",
+  "description": "RhodawkAI Bounty Hunter CLI wrapper — fail-closed, CDN-aware autonomous bug bounty reconnaissance & attack-surface prioritization.",
+  "license": "MIT",
+  "author": "RhodawkAI <manager@rhodawkai.com>",
+  "homepage": "https://rhodawkai.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rhodawk-AI/rhodawk-bounty-hunter.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/issues"
+  },
+  "keywords": [
+    "security",
+    "bug-bounty",
+    "recon",
+    "pentest",
+    "ai-agent",
+    "mcp",
+    "rhodawkai"
+  ],
+  "bin": {
+    "rhodawk": "bin/rhodawk.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

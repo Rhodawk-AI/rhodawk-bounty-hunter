@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rhodawk": {
+      "command": "rhodawk",
+      "args": ["mcp", "serve"],
+      "env": {
+        "RHODAWK_MCP_APPROVE": "0"
+      }
+    }
+  }
+}

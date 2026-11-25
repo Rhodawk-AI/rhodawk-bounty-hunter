@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "command": "echo 'Bug Bounty Session Started. Run /recon <target> to begin or /hunt to continue an active target. Check scope FIRST.'"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "command": "echo 'Session ended. Save findings to findings/. Run /validate on any leads before next session.'"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "echo 'Hunt complete. Checklist: findings saved? scope verified? reports in reports/? run /validate on any unvalidated leads.'"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|mcp__rhodawk-mcp__rhodawk_recon|mcp__rhodawk-mcp__rhodawk_hunt|mcp__rhodawk-mcp__rhodawk_hunt_class|mcp__rhodawk-mcp__rhodawk_research|mcp__rhodawk-mcp__rhodawk_run_rtw_capability",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 rhodawk/tools/hook_scope_guard.py"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+recursive-include rhodawk *
+global-exclude __pycache__/*
+global-exclude *.pyc
+include README.md LICENSE NOTICE CHANGELOG.md requirements.txt
