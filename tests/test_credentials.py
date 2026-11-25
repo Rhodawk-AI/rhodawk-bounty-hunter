@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -590,3 +591,38 @@ def _setup_args():
     from types import SimpleNamespace
     return SimpleNamespace(setup_provider="ollama", setup_model="qwen2.5:14b",
                            provider=None, model=None)
+
+
+class TestVaultWriteHardening:
+    """Release audit R-14 + L-10: atomic 0600 writes, newline rejection."""
+
+    def test_newline_in_value_is_rejected(self, tmp_path):
+        target = tmp_path / "vault.env"
+        with pytest.raises(ValueError, match="newline"):
+            credentials.write_env_file(
+                {"H1_API_TOKEN": "tok\nEVIL_KEY=pwned"}, target)
+
+    def test_carriage_return_in_value_is_rejected(self, tmp_path):
+        target = tmp_path / "vault.env"
+        with pytest.raises(ValueError, match="newline"):
+            credentials.write_env_file(
+                {"H1_API_TOKEN": "tok\rEVIL_KEY=pwned"}, target)
+
+    def test_new_file_is_0600(self, tmp_path):
+        target = tmp_path / "vault.env"
+        credentials.write_env_file({"H1_API_TOKEN": "tok"}, target)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_preexisting_loose_file_replaced_atomically_to_0600(self, tmp_path):
+        target = tmp_path / "vault.env"
+        target.write_text("H1_API_TOKEN=old\n", encoding="utf-8")
+        os.chmod(target, 0o664)
+        credentials.write_env_file({"H1_API_TOKEN": "new"}, target)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert "EVIL" not in target.read_text(encoding="utf-8")
+
+    def test_no_temp_files_left_behind(self, tmp_path):
+        target = tmp_path / "vault.env"
+        credentials.write_env_file({"H1_API_TOKEN": "tok"}, target)
+        strays = [p.name for p in tmp_path.iterdir() if p.name.startswith(".vault-")]
+        assert not strays, f"leftover temp files: {strays}"

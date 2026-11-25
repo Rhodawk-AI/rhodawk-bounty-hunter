@@ -51,6 +51,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -465,10 +466,24 @@ def write_env_file(values: dict[str, str], path: Path | None = None) -> Path:
     """Write the vault with ALL managed keys, organized by commented tool
     sections. Populated when configured; blank (KEY="") when skipped.
 
-    Enforces 0o700 on the directory and 0o600 on the file."""
+    Enforces 0o700 on the directory and 0o600 on the file. The write is
+    atomic: content lands in a freshly created 0600 temp file that is
+    os.replace()d over the target, so a pre-existing loose-permission vault
+    is never readable while partially rewritten, and the new file's 0600
+    mode is guaranteed even if the old file was looser (release audit R-14).
+    Values containing newlines are rejected outright — one injected CR/LF
+    would smuggle an extra KEY=value line into the .env file (audit L-10)."""
     target = Path(path) if path is not None else vault_env_file()
     target.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(target.parent, 0o700)
+    for field_group in CREDENTIAL_GROUPS:
+        for field in field_group["fields"]:
+            value = values.get(field["var"], "")
+            if "\n" in value or "\r" in value:
+                raise ValueError(
+                    f"{field['var']}: credential values may not contain "
+                    f"newline characters (they would inject extra keys into "
+                    f"the .env file)")
     lines = [
         "# RhodawkAI Bounty Hunter credential vault — managed by rhodawk/tools/credentials.py",
         "# Perms: 0600 (auto-tightened) · directory ~/.rhodawk is 0700.",
@@ -489,10 +504,24 @@ def write_env_file(values: dict[str, str], path: Path | None = None) -> Path:
         lines.append("")
     lines.append("# Keyless tools (no credentials needed): "
                  + ", ".join(t["name"] for t in KEYLESS_TOOLS))
-    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-    os.chmod(str(target), 0o600)
+    payload = "\n".join(lines) + "\n"
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent),
+                                    prefix=".vault-", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+    except BaseException:
+        try:
+            os.close(fd)  # a failed fdopen already closed it — ignore EBADF
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
     return target
 
 

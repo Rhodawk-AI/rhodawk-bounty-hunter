@@ -536,8 +536,13 @@ def print_summary():
 
 def main():
     parser = argparse.ArgumentParser(description="HackerOne Cross-User IDOR Scanner")
-    parser.add_argument("--token-a", required=True, help="Account A Bearer token (resource owner)")
-    parser.add_argument("--token-b", required=True, help="Account B Bearer token (attacker)")
+    # Audit R-08: tokens arrive via the environment (RHODAWK_H1_TOKEN_A/B) so
+    # they never sit on a command line visible in `ps`; argv still works for
+    # interactive use.
+    parser.add_argument("--token-a", default=os.environ.get("RHODAWK_H1_TOKEN_A"),
+                        help="Account A Bearer token (resource owner; or set RHODAWK_H1_TOKEN_A)")
+    parser.add_argument("--token-b", default=os.environ.get("RHODAWK_H1_TOKEN_B"),
+                        help="Account B Bearer token (attacker; or set RHODAWK_H1_TOKEN_B)")
     parser.add_argument("--report-id", help="A report ID that Account A owns")
     parser.add_argument("--user-id", help="Account A's numeric user ID")
     parser.add_argument("--program", help="Program handle to test (A's sandbox program)")
@@ -545,6 +550,9 @@ def main():
     parser.add_argument("--skip", nargs="*", default=[], help="Test numbers to skip e.g. --skip 3 7 12")
     parser.add_argument("--only", nargs="*", default=[], help="Run only specific tests e.g. --only 1 2 9")
     args = parser.parse_args()
+    if not args.token_a or not args.token_b:
+        parser.error("--token-a/--token-b are required (or set RHODAWK_H1_TOKEN_A / "
+                     "RHODAWK_H1_TOKEN_B so tokens stay off the command line)")
 
     skip = set(args.skip or [])
     only = set(args.only or [])
@@ -555,8 +563,10 @@ def main():
         return n not in skip
 
     print("HackerOne IDOR Scanner")
-    print(f"Token A: {args.token_a[:8]}...")
-    print(f"Token B: {args.token_b[:8]}...")
+    # Audit R-08: never print token material (not even a prefix) — stdout may
+    # be tee'd into a findings log.
+    print("Token A: set (value masked)")
+    print("Token B: set (value masked)")
     print(f"Report ID: {args.report_id}")
     print(f"User ID: {args.user_id}")
     print(f"Program: {args.program}")

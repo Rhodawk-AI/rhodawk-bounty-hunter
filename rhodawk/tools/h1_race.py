@@ -211,8 +211,11 @@ def test_email_change_race(token: str, email1: str, email2: str, count: int = 10
 
 def main():
     parser = argparse.ArgumentParser(description="HackerOne Race Condition Tester")
-    parser.add_argument("--token-a", required=True, help="Account A Bearer token")
-    parser.add_argument("--token-b", help="Account B Bearer token (for some tests)")
+    # Audit R-08: env fallback so tokens stay off the command line (`ps`).
+    parser.add_argument("--token-a", default=os.environ.get("RHODAWK_H1_TOKEN_A"),
+                        help="Account A Bearer token (or set RHODAWK_H1_TOKEN_A)")
+    parser.add_argument("--token-b", default=os.environ.get("RHODAWK_H1_TOKEN_B"),
+                        help="Account B Bearer token (for some tests; or set RHODAWK_H1_TOKEN_B)")
     parser.add_argument("--test", required=True,
                         choices=["2fa", "bounty", "negative-bounty", "email-race", "all"],
                         help="Which test to run")
@@ -221,6 +224,9 @@ def main():
     parser.add_argument("--email1", help="First email for race test")
     parser.add_argument("--email2", help="Second email for race test")
     args = parser.parse_args()
+    if not args.token_a and not args.token_b:
+        parser.error("--token-a is required (or set RHODAWK_H1_TOKEN_A so the "
+                     "token stays off the command line)")
 
     print("HackerOne Race Condition Tester")
     print(f"Test: {args.test} | Threads: {args.count}\n")
