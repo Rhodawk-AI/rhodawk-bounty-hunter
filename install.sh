@@ -170,6 +170,72 @@ copy_files() {
     fi
 }
 
+register_pretooluse_scope_guard() {
+    # ── PreToolUse scope-guard hook (R-11) ────────────────────────────────────
+    # Plugin installs get hooks.json automatically (Claude Code resolves
+    # ${CLAUDE_PLUGIN_ROOT} itself). For NON-plugin installs this registers
+    # the same deterministic scope guard in settings.json so active Bash/MCP
+    # tool calls are gated by a hash-verified scope manifest there too.
+    # Merge semantics: existing user hooks are preserved; the guard command is
+    # appended to hooks.PreToolUse only when not already present.
+    local root="$1"
+    local settings="$root/settings.json"
+    local guard_src="$SCRIPT_DIR/rhodawk/tools/hook_scope_guard.py"
+    [ -f "$guard_src" ] || { echo "[!] scope guard script missing — hook not registered"; return 0; }
+    command -v python3 >/dev/null 2>&1 || { echo "[!] python3 unavailable — PreToolUse scope guard NOT registered"; return 0; }
+
+    python3 - "$settings" "$guard_src" <<'PYGUARD' || { echo "[!] could not merge $settings — PreToolUse scope guard NOT registered"; return 0; }
+import json
+import os
+import sys
+
+settings_path, guard_path = sys.argv[1], sys.argv[2]
+settings = {}
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        print(f"[!] existing {settings_path} is not valid JSON; refusing to edit it", file=sys.stderr)
+        sys.exit(1)
+if not isinstance(settings, dict):
+    print(f"[!] {settings_path} is not a JSON object; refusing to edit it", file=sys.stderr)
+    sys.exit(1)
+
+command = f'python3 "{guard_path}"'
+hooks = settings.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    print("[!] hooks is not an object; refusing to edit", file=sys.stderr)
+    sys.exit(1)
+pre = hooks.setdefault("PreToolUse", [])
+if not isinstance(pre, list):
+    print("[!] hooks.PreToolUse is not a list; refusing to edit", file=sys.stderr)
+    sys.exit(1)
+
+def _guard_present(entries):
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for h in entry.get("hooks", []) or []:
+            if isinstance(h, dict) and guard_path in str(h.get("command", "")):
+                return True
+    return False
+
+if _guard_present(pre):
+    print("[+] PreToolUse scope guard already registered")
+else:
+    pre.append({
+        "matcher": "Bash|mcp__rhodawk-mcp__rhodawk_recon|mcp__rhodawk-mcp__rhodawk_hunt|mcp__rhodawk-mcp__rhodawk_hunt_class|mcp__rhodawk-mcp__rhodawk_research|mcp__rhodawk-mcp__rhodawk_run_rtw_capability",
+        "hooks": [{"type": "command", "command": command}],
+    })
+    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+    with open(settings_path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+        fh.write("\n")
+    print("[+] PreToolUse scope guard registered in", settings_path)
+PYGUARD
+}
+
 install_claude() {
     local root
     if [ "$SCOPE" = "project" ]; then
@@ -182,6 +248,7 @@ install_claude() {
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     copy_files "$AGENTS_SRC/*.md" "$root/agents" "agent"
+    register_pretooluse_scope_guard "$root"
     echo "Done: $root"
 
     if [ "$SETUP_BURP" = "ask" ]; then
