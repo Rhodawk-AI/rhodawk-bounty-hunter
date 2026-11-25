@@ -10,6 +10,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 FILES = [
     "rhodawk/tools/_spray_oauth.py",
+    "rhodawk/tools/_spray_http_form.py",
     "rhodawk/tools/h1_mutation_idor.py",
     "rhodawk/tools/learn.py",
     "rhodawk/tools/validate.py",
