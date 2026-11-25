@@ -139,7 +139,7 @@ def print_banner(subtitle: Optional[str] = None, target: Optional[str] = None,
 
 
 if __name__ == "__main__":
-    # Preview: `python3 -m tools.banner [subtitle] [target]`
+    # Preview: `python3 -m rhodawk.tools.banner [subtitle] [target]`
     sub = sys.argv[1] if len(sys.argv) > 1 else "Bug Bounty Automation Pipeline"
     tgt = sys.argv[2] if len(sys.argv) > 2 else None
     demo_steps = [

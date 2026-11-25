@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """CLI for the deterministic verifier library.
 
-    python3 -m tools.verifiers --finding finding.json
+    python3 -m rhodawk.tools.verifiers --finding finding.json
     echo '{"vuln_class":"open-redirect","url":"https://t/go?url=x","param":"url"}' \
-        | python3 -m tools.verifiers --stdin
+        | python3 -m rhodawk.tools.verifiers --stdin
 
 Exit codes: 0 confirmed, 1 rejected, 2 skipped/unverifiable, 3 bad input.
 """

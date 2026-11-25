@@ -5,8 +5,8 @@ Migrate hunt-memory JSONL files from schema v1 → v2 (copy-forward).
 Does not delete data. Writes .bak alongside via rotation helpers when rewriting.
 
 Usage:
-    python -m tools.memory_migrate
-    python -m tools.memory_migrate --dir hunt-memory --dry-run
+    python3 -m rhodawk.tools.memory_migrate
+    python3 -m rhodawk.tools.memory_migrate --dir hunt-memory --dry-run
 """
 
 from __future__ import annotations

@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# Tests for tools/cicd_scanner.sh
+# Tests for rhodawk/tools/cicd_scanner.sh
 # Usage: bash tests/test_cicd_scanner.sh
+# Wired into pytest via tests/test_shell_test_suites.py (audit R-13) so the
+# suite actually runs in CI instead of rotting uncollected.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CICD_SCANNER="$SCRIPT_DIR/tools/cicd_scanner.sh"
+CICD_SCANNER="$SCRIPT_DIR/rhodawk/tools/cicd_scanner.sh"
 PASS=0
 FAIL=0
 

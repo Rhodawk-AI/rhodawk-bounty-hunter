@@ -7,11 +7,11 @@ patterns.jsonl, journal.jsonl) and reports per-file size + backup usage.
 Optionally rotates oversize files or purges existing backups.
 
 Usage:
-    python -m tools.memory_gc                       # report only
-    python -m tools.memory_gc --dir hunt-memory     # report on a custom dir
-    python -m tools.memory_gc --rotate              # force-rotate live files
-    python -m tools.memory_gc --rotate --max-mb 5   # rotate above 5 MB
-    python -m tools.memory_gc --purge-backups       # delete all .1/.2/.3 files
+    python3 -m rhodawk.tools.memory_gc                       # report only
+    python3 -m rhodawk.tools.memory_gc --dir hunt-memory     # report on a custom dir
+    python3 -m rhodawk.tools.memory_gc --rotate              # force-rotate live files
+    python3 -m rhodawk.tools.memory_gc --rotate --max-mb 5   # rotate above 5 MB
+    python3 -m rhodawk.tools.memory_gc --purge-backups       # delete all .1/.2/.3 files
 """
 
 import argparse

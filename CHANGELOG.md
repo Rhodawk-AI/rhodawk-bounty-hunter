@@ -3,6 +3,77 @@
 All notable changes to RhodawkAI Bounty Hunter are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: SemVer.
 
+## [Unreleased]
+
+Release-audit Sprint 1 — P0 hardening (security review of the v2.0.0
+standalone tree). All findings carry their audit IDs.
+
+### Fixed — runtime artifacts and wheel pollution (R-01)
+
+- Output-home resolution no longer falls back to the install directory:
+  `engine._data_home()`, `hunt._bh_home()`, `rtw_adapter._default_recon_dir()`
+  and the memory modules resolve `$RHODAWK_HOME` → `~/.rhodawk` and never the
+  package directory. A plain `pytest` run (or a hunt from a git clone) used to
+  write `recon/`, `findings/`, `hunt-memory/` INTO the source tree.
+- `tests/conftest.py` pins `RHODAWK_HOME`, `RECON_OUT_DIR` and `XDG_DATA_HOME`
+  into `tmp_path` for every test (autouse).
+- Packaging: `MANIFEST.in` prunes runtime directories; the `**/*` package-data
+  wildcard is replaced by explicit data subtrees; new
+  `tests/test_wheel_cleanliness.py` + `tests/check_wheel_clean.py` gate (also
+  a CI step) asserts a built wheel contains zero runtime artifacts.
+
+### Fixed — dependencies (R-03)
+
+- `requirements.txt` is runtime-only; `pytest` moved to the new
+  `requirements-dev.txt` (with `build`), and CI installs the dev set.
+
+### Fixed — release identity (R-02, R-10, R-24)
+
+- Console entry points (`rhodawk`, `rhodawk-agent`) are regression-tested to
+  exist and resolve.
+- Version parity test across pyproject / `__init__.py` / `plugin.json` /
+  npm `package.json` (all 2.0.0); SECURITY.md supported-versions table now
+  tracks 2.x.
+- Issue templates no longer declare an organization login as assignee.
+
+### Fixed — TLS (R-04)
+
+- `_spray_http_form.py` mirrors `_spray_oauth.py`: on missing certifi it
+  falls back to the verifying system-CA context instead of disabling
+  verification; it joins the TLS regression scan list.
+
+### Fixed — secret handling (R-08, R-09, R-14, L-10)
+
+- `h1_run.sh`: `set -euo pipefail`; tokens come from `RHODAWK_H1_TOKEN_A/B`
+  env vars or a 0600 token file; curl auth headers go through 0600 temp files
+  (no token on argv); scanners read tokens from the environment; no token
+  material (not even prefixes) reaches stdout or the scan log; findings land
+  in the data home.
+- `graphql_audit.sh` banner prints `cookie set` / `header set` / `(none)`
+  instead of the raw credential values.
+- `credentials.write_env_file` and `google_oauth._save_json_secure` write
+  atomically via a 0600 temp file + `os.replace` — pre-existing loose files
+  can no longer hold fresh secrets, and the swallowed chmod failure is gone.
+- Credential values containing CR/LF are rejected (newline could inject an
+  extra `KEY=` line into the .env vault).
+
+### Fixed — shell/python injection (R-15)
+
+- All seven `python3 -c` call sites that interpolated shell variables into
+  the Python source (secrets_hunter, takeover_scanner, cve_scan,
+  param_discovery, osint_employees, full_hunt ×2, vuln_scanner) now pass
+  values as `sys.argv` arguments; a regression gate bans the pattern.
+
+### Fixed — paths and wiring (R-12, R-13)
+
+- `.claude/settings.json` Stop hook and every doc/docstring referencing
+  `python3 -m tools.…` now use `python3 -m rhodawk.tools.…` (the old module
+  path stopped resolving after the package rename).
+- `install_tools.sh --with-cicd-scanner` and `tests/test_cicd_scanner.sh`
+  point at `rhodawk/tools/cicd_scanner.sh` (the path they referenced never
+  existed in this repo); the shell suite is wired into pytest via
+  `tests/test_shell_test_suites.py` so it runs in CI.
+
 ## [2.0.0] — 2026-11-25
 
 Initial **standalone** release of **RhodawkAI Bounty Hunter** — the first

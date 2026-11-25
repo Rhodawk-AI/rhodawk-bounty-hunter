@@ -1940,7 +1940,7 @@ Do NOT fabricate hypothetical chains using invented endpoints or made-up evidenc
                 return True, ""
             return False, (
                 "NO_REPORTS\nReport gate blocked: no validation.json found. Run the "
-                "deterministic verifier first (python3 -m tools.verifiers / "
+                "deterministic verifier first (python3 -m rhodawk.tools.verifiers / "
                 "tools/validate.py --auto <finding.json>). "
                 "Set RHODAWK_ALLOW_UNVALIDATED_REPORT=1 to override."
             )
