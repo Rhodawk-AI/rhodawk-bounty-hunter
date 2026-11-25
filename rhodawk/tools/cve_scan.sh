@@ -40,7 +40,7 @@ done
 
 [ -z "$TARGET" ] && { err "target host or -l <file> required"; exit 2; }
 
-OUT_DIR="${CVE_OUT_DIR:-$(pwd)/findings/cve/$(date +%Y%m%d_%H%M%S)}"
+OUT_DIR="${CVE_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/cve/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUT_DIR"
 
 # shellcheck source=banner.sh

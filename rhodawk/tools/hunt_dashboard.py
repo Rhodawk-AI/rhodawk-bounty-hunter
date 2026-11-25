@@ -46,7 +46,12 @@ import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT_DEFAULT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Audit R-01: runtime state (memory/leads, recon/, findings/, reports/,
+# hunt-memory/) lives under the data home — mirror lead_board.py's resolution
+# so the dashboard reads exactly where the writers produce.
+_data_home_env = os.environ.get("RHODAWK_HOME")
+ROOT_DEFAULT = (_data_home_env if _data_home_env
+                else os.path.join(os.path.expanduser("~"), ".rhodawk"))
 
 # Mirror lead_board.py's vocabulary so the board reads the same everywhere.
 PRIO_RANK = {"high": 0, "med": 1, "low": 2}

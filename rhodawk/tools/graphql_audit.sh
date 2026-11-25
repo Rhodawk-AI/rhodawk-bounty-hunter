@@ -55,7 +55,7 @@ done
 # ---------------------------------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 HOST=$(echo "$URL" | awk -F/ '{print $3}' | tr -d '[:space:]')
-OUT_DIR="${OUT_DIR:-$(pwd)/findings/graphql/${HOST}/${TIMESTAMP}}"
+OUT_DIR="${OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/graphql/${HOST}/${TIMESTAMP}}"
 mkdir -p "$OUT_DIR"
 
 SUMMARY="$OUT_DIR/summary.txt"

@@ -76,7 +76,7 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 
-OUT_DIR="recon/${TARGET}/osint"
+OUT_DIR="${RHODAWK_HOME:-$HOME/.rhodawk}/recon/${TARGET}/osint"
 mkdir -p "$OUT_DIR"
 HARVESTER_OUT="$OUT_DIR/theharvester"
 EMAILS="$OUT_DIR/emails.txt"

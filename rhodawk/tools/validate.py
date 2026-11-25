@@ -811,7 +811,13 @@ def write_validation_json(output_dir: str, info: dict, gate_notes: dict) -> str:
     try:
         from tools.research_log import draft_from_validation, new_finding_id
         finding_id = new_finding_id()
-        memory_dir = get_env("RHODAWK_MEMORY_DIR", default="hunt-memory")
+        # Audit R-01: default to the data home's hunt-memory, never a
+        # CWD-relative ./hunt-memory (a validation run from the repo root used
+        # to drop journal.jsonl straight into the source tree).
+        memory_dir = (get_env("RHODAWK_MEMORY_DIR")
+                      or os.path.join(get_env("RHODAWK_HOME")
+                                      or os.path.expanduser("~/.rhodawk"),
+                                      "hunt-memory"))
         draft_from_validation(
             target=str(info.get("target") or "unknown"),
             vuln_class=str(info.get("vuln_type") or "unknown"),

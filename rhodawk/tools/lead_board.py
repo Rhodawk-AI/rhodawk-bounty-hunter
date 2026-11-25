@@ -34,7 +34,19 @@ import secrets
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LEADS_DIR = os.path.join(ROOT, "memory", "leads")
+
+
+def _data_home() -> str:
+    """Runtime data home: $RHODAWK_HOME else ~/.rhodawk (audit R-01)."""
+    env = os.environ.get("RHODAWK_HOME")
+    return env if env else os.path.join(os.path.expanduser("~"), ".rhodawk")
+
+
+# Lead ledgers are RUNTIME DATA (audit R-01): they live under the data home,
+# never inside the package directory — the old rhodawk/memory/leads location
+# made every hunt drop files into the installed source tree, where they
+# leaked into built wheels.
+LEADS_DIR = os.path.join(_data_home(), "memory", "leads")
 
 # ---------------------------------------------------------------------------
 # ROUTING TABLE — the brain. (pattern, source, skill, priority, label, why)
