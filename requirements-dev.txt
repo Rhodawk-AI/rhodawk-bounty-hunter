@@ -1,0 +1,7 @@
+# Development / CI requirements (release audit R-03): pytest is a TEST
+# dependency, not a runtime one — the pip-installable package must not drag
+# the test runner into every install. Runtime deps live in requirements.txt
+# and pyproject.toml; test-only tools live here.
+-r requirements.txt
+pytest>=8.4.2
+build>=1.2.1

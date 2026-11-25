@@ -1,5 +1,5 @@
-# CI: fast launch-hygiene gate — shell syntax + the full test suite on
-# every push / PR to main.
+# CI: fast launch-hygiene gate — shell syntax + the full test suite + a
+# wheel-cleanliness build check on every push / PR to main.
 name: ci
 
 on:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   fast-checks:
-    name: shell syntax + pytest
+    name: shell syntax + pytest + wheel gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install -e .
 
       - name: pytest
         run: pytest -q
+
+      # Release audit R-01: a wheel built from a used source tree must never
+      # contain runtime artifacts (recon/, findings/, ...). tests/
+      # test_wheel_cleanliness.py already asserts this in-suite; the explicit
+      # step keeps the gate visible in CI and pins the build dependency.
+      - name: wheel cleanliness (no runtime artifacts in wheel)
+        run: |
+          python -m build --wheel --outdir dist/
+          python tests/check_wheel_clean.py dist/*.whl

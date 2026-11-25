@@ -18,12 +18,27 @@ from memory.schemas import CURRENT_SCHEMA_VERSION
 
 @pytest.fixture(autouse=True)
 def _isolated_rhodawk_config(tmp_path, monkeypatch):
-    """Pin the saved-provider config (brain.py LLMClient) to a nonexistent
-    path so a developer's real ~/.rhodawk/config.json can never leak into
-    unit tests. Tests that exercise config loading override
-    RHODAWK_CONFIG_FILE themselves."""
+    """Pin every runtime-output location into tmp_path.
+
+    RHODAWK_CONFIG_FILE: saved-provider config (brain.py LLMClient) points at
+    a nonexistent path so a developer's real ~/.rhodawk/config.json can never
+    leak into unit tests. Tests that exercise config loading override it
+    themselves.
+
+    RHODAWK_HOME / RECON_OUT_DIR / XDG_DATA_HOME (release audit R-01): all
+    writable runtime output (recon, findings, targets, reports, hunt-memory)
+    must land in tmp_path, never in the source tree — artifacts written into
+    the package directory used to leak into built wheels. Any test needing a
+    different home still overrides these itself (fixture ordering: this
+    autouse fixture runs first)."""
     monkeypatch.setenv("RHODAWK_CONFIG_FILE",
                        str(tmp_path / "no-config.json"))
+    # Note: the pinned directories are NOT pre-created — every writer in the
+    # codebase mkdir(parents=True) its own output path, and pre-creating would
+    # collide with test-local fixtures that mkdir the same layout themselves.
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rhodawk-home"))
+    monkeypatch.setenv("RECON_OUT_DIR", str(tmp_path / "rhodawk-home" / "recon"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
 
 @pytest.fixture

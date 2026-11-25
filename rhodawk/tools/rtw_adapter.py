@@ -1031,14 +1031,18 @@ def run_phase(phase: str, target: str, **kwargs) -> List[dict]:
 
 
 def _default_recon_dir(target_host: str) -> Path:
-    """Mirror recon_engine.sh: $BASE_DIR/recon/<target> (BASE_DIR = rhodawk/),
-    or $RECON_OUT_DIR when set. Falls back to data-home recon/."""
+    """Resolve the recon output directory for target_host.
+
+    Priority: $RECON_OUT_DIR (set per-session by engine.py), then the data
+    home ($RHODAWK_HOME, else ~/.rhodawk). The package/install directory is
+    deliberately NOT used for runtime output: preferring it when writable
+    made a plain `pytest` run (and any hunt from a git clone) write recon/
+    artifacts into the source tree, which then leaked into built wheels
+    (release audit R-01).
+    """
     env_dir = os.environ.get("RECON_OUT_DIR")
     if env_dir:
         return Path(env_dir) / target_host
-    base = _RHODAWK_DIR
-    if os.access(base, os.W_OK):
-        return base / "recon" / target_host
     return data_home() / "recon" / target_host
 
 

@@ -41,6 +41,11 @@ class TestHuntGraphqlAuditNoInjection:
         monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
         monkeypatch.setattr(hunt, "TOOLS_DIR", str(tmp_path / "tools"))
         monkeypatch.setattr(hunt, "BASE_DIR", str(tmp_path))
+        # Audit R-01: run_graphql_audit makedirs FINDINGS_DIR/<domain>/graphql
+        # before invoking the script — pin it so the module-level default
+        # (resolved from the environment at import time) can never point at
+        # the source tree even if the conftest pin is bypassed.
+        monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
         os.makedirs(os.path.join(tmp_path, "tools"), exist_ok=True)
         # A no-op stand-in for graphql_audit.sh so the test only checks
         # that the malicious URL string never reaches a shell.

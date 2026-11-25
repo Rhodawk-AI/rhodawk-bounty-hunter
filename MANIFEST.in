@@ -1,4 +1,20 @@
 recursive-include rhodawk *
+# Runtime output directories (release audit R-01): a pytest run or a hunt
+# launched from a git clone used to write recon/findings/etc. into the source
+# tree; pruning them here keeps both the sdist and the wheel clean even when
+# the tree was used before packaging. tests/test_wheel_cleanliness.py is the
+# hard gate.
+prune rhodawk/recon
+prune rhodawk/findings
+prune rhodawk/reports
+prune rhodawk/targets
+prune rhodawk/hunt-memory
+prune rhodawk/memory/leads
+prune recon
+prune findings
+prune reports
+prune targets
+prune hunt-memory
 global-exclude __pycache__/*
 global-exclude *.pyc
 include README.md LICENSE NOTICE CHANGELOG.md requirements.txt

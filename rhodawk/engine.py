@@ -71,15 +71,16 @@ AGENTS   = HERE / "agents"
 TOOLS    = HERE / "tools"
 # Writable output goes under a user data home, not the install dir, so the tool
 # works whether it runs from a git clone or a read-only pip install.
-# Override with RHODAWK_HOME; defaults to the clone dir if it is writable
-# (preserves legacy layout), else ~/.rhodawk.
+# Override with RHODAWK_HOME; defaults to ~/.rhodawk. The install/source
+# directory is deliberately NOT used as a fallback: honoring writability of
+# HERE made a plain `pytest` run (and any hunt from a git clone) write
+# recon/findings/reports into the source tree, which then leaked into built
+# wheels (release audit R-01).
 def _data_home():
     import os
     env = get_env("RHODAWK_HOME")
     if env:
         return Path(env).expanduser()
-    if os.access(HERE, os.W_OK):
-        return HERE
     return Path.home() / ".rhodawk"
 
 DATA_HOME = _data_home()
