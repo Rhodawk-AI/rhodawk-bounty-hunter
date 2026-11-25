@@ -76,6 +76,21 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 
+# umask 077 (R-18): OSINT output enumerates real employee identities —
+# PII-grade material, never world-readable.
+umask 077
+
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh: a resolvable compiled_scope.json
+# must pass SHA-256 verification before the run (missing/tampered = exit 3 +
+# JSONL audit).
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="osint_employees.sh"
+if ! rhodawk_scope_gate_init "" "$TARGET"; then
+  echo "[-] scope gate blocked the run (exit 3)" >&2; exit 3
+fi
+
 OUT_DIR="${RHODAWK_HOME:-$HOME/.rhodawk}/recon/${TARGET}/osint"
 mkdir -p "$OUT_DIR"
 HARVESTER_OUT="$OUT_DIR/theharvester"

@@ -42,6 +42,17 @@ done
 OUT_DIR="${CLOUD_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/cloud/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUT_DIR"
 
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Bucket/keyword enumeration is passive, but the gate still applies: a
+# resolvable compiled_scope.json (env RHODAWK_SCOPE_MANIFEST) must pass
+# SHA-256 verification before the run (missing/tampered = exit 3 + audit).
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="cloud_recon.sh"
+if ! rhodawk_scope_gate_init "" "$KEYWORD"; then
+  err "scope gate blocked the run (exit 3)"; exit 3
+fi
+
 # shellcheck source=banner.sh
 . "$SCRIPT_DIR/banner.sh"
 print_banner "Cloud Recon · S3 · Azure · GCP" "${KEYWORD:-$CF_TARGET}" \

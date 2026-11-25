@@ -63,7 +63,10 @@ def run_cmd(cmd, timeout=15):
 
 
 def curl_request(url, method="GET", headers=None, data=None, timeout=10):
-    """Make an HTTP request via curl and return status, headers, body."""
+    """Make an HTTP request via curl and return status, headers, body.
+
+    Rate-limited per host (RHODAWK_RATE_LIMIT / manifest max_rps ceiling)."""
+    rate_limit_sleep_for(url)
     cmd_parts = ["curl", "-s", "-D-", "--max-time", str(timeout)]
 
     if method != "GET":
@@ -95,6 +98,68 @@ def curl_request(url, method="GET", headers=None, data=None, timeout=10):
     status = int(status_match.group(1)) if status_match else 0
 
     return status, resp_headers, body
+
+
+# ── Scope + rate-limit infrastructure (R-21) ─────────────────────────────────
+# The fuzzer actively sends crafted requests, so it runs ONLY under a verified
+# scope manifest, never against private/metadata hosts, and never faster than
+# the manifest/env allows.
+
+_LAST_REQUEST_TS = {}          # host -> monotonic timestamp of last request
+_RATE_LIMIT_RPS = 0.0          # 0 = unlimited (no manifest ceiling, no env)
+
+
+def set_rate_limit(rps: float) -> None:
+    """Configure the per-host request floor (requests/second ceiling)."""
+    global _RATE_LIMIT_RPS
+    try:
+        rps = float(rps)
+    except (TypeError, ValueError):
+        rps = 0.0
+    _RATE_LIMIT_RPS = max(0.0, rps)
+
+
+def rate_limit_sleep_for(url: str) -> None:
+    """Sleep just enough to keep this host under the configured RPS ceiling."""
+    if _RATE_LIMIT_RPS <= 0:
+        return
+    host = urlparse(url).netloc or url
+    min_interval = 1.0 / _RATE_LIMIT_RPS
+    now = time.monotonic()
+    last = _LAST_REQUEST_TS.get(host)
+    if last is not None:
+        remaining = min_interval - (now - last)
+        if remaining > 0:
+            time.sleep(min(remaining, 30.0))
+    _LAST_REQUEST_TS[host] = time.monotonic()
+
+
+def url_blocked(url: str, scope_checker) -> str | None:
+    """Hop-0 gate for every URL this fuzzer would touch.
+
+    SSRF blocklist (loopback / RFC1918 / link-local / cloud metadata via the
+    canonical safe_http helper) plus manifest scope membership — checked
+    BEFORE the URL is loaded from recon output or probed. Returns a block
+    reason or None."""
+    try:
+        from safe_http import initial_host_blocked
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from safe_http import initial_host_blocked
+    host = ""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if initial_host_blocked(url):
+        return (f"blocked: host is loopback/private/metadata "
+                f"({host or 'unparseable'}) — SSRF guard")
+    if scope_checker is None:
+        return "blocked: no verified scope manifest (fail closed)"
+    if not scope_checker.is_in_scope(url):
+        return f"blocked: {url} is out of scope"
+    return None
 
 
 def get_response_signature(status, body):
@@ -563,16 +628,80 @@ class ZeroDayFuzzer:
         print(f"{'='*55}\n")
 
 
+def _resolve_scope_checker(args):
+    """Locate and SHA-256 verify the scope manifest, or return None.
+
+    Resolution order: --manifest flag, $RHODAWK_SCOPE_MANIFEST, then the
+    session artifact at <recon-dir>/scope/compiled_scope.json. A manifest that
+    exists but fails verification raises (the caller exits 3) — a tampered
+    manifest never authorizes a fuzzing run.
+    """
+    try:
+        from scope_checker import ScopeChecker
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from scope_checker import ScopeChecker
+
+    manifest = getattr(args, "manifest", None) \
+        or os.environ.get("RHODAWK_SCOPE_MANIFEST", "").strip()
+    if not manifest and getattr(args, "recon_dir", None):
+        candidate = os.path.join(args.recon_dir, "scope", "compiled_scope.json")
+        if os.path.isfile(candidate):
+            manifest = candidate
+    if not manifest:
+        return None
+    return ScopeChecker.from_manifest(manifest)  # raises ValueError if tampered
+
+
 def main():
     parser = argparse.ArgumentParser(description="Zero-Day Bug Finder")
     parser.add_argument("target", nargs="?", help="Target URL (https://example.com)")
     parser.add_argument("--recon-dir", type=str, help="Recon directory to load URLs from")
     parser.add_argument("--deep", action="store_true", help="Run additional deep checks")
+    parser.add_argument("--manifest", default=None,
+                        help="compiled_scope.json path (SHA-256 verified). Also "
+                             "auto-detected from --recon-dir/scope/ or "
+                             "$RHODAWK_SCOPE_MANIFEST; without a verified "
+                             "manifest the fuzzer refuses to run (exit 3)")
     args = parser.parse_args()
 
     if not args.target and not args.recon_dir:
         parser.print_help()
         sys.exit(1)
+
+    # R-21: a verified manifest is REQUIRED before this tool touches the
+    # network — it drives both scope membership and the rate ceiling.
+    try:
+        scope_checker = _resolve_scope_checker(args)
+    except (ValueError, OSError) as exc:
+        print(f"[-] SCOPE BLOCK: scope manifest unusable: {exc}", file=sys.stderr)
+        sys.exit(3)
+    if scope_checker is None:
+        print("[-] SCOPE BLOCK: no verified scope manifest — refusing to fuzz "
+              "(pass --manifest, set RHODAWK_SCOPE_MANIFEST, or run scope-compile "
+              "for the recon dir)", file=sys.stderr)
+        sys.exit(3)
+
+    # Rate ceiling: manifest max_rps wins over the operator env value; the
+    # lower of the two applies when both are set.
+    manifest_rps = 0.0
+    manifest_obj = getattr(scope_checker, "manifest", None)
+    if manifest_obj is not None:
+        try:
+            manifest_rps = float(getattr(manifest_obj, "max_rps", 0) or 0)
+        except (TypeError, ValueError):
+            manifest_rps = 0.0
+    env_rps = 0.0
+    try:
+        env_rps = float(os.environ.get("RHODAWK_RATE_LIMIT", "") or 0)
+    except ValueError:
+        env_rps = 0.0
+    effective_rps = min(r for r in (manifest_rps, env_rps) if r > 0) \
+        if (manifest_rps > 0 or env_rps > 0) else 0.0
+    set_rate_limit(effective_rps)
+    if effective_rps > 0:
+        print(f"[*] Rate limit: {effective_rps} req/s per host")
 
     targets = []
 
@@ -587,6 +716,22 @@ def main():
         if os.path.exists(live_file):
             with open(live_file) as f:
                 targets.extend([line.strip() for line in f if line.strip()][:10])
+
+    # Scope/SSRF gate BEFORE any URL is loaded into a fuzzer: blocked URLs are
+    # dropped here (loudly), so a poisoned live/urls.txt can never direct
+    # fuzzing at cloud metadata, private ranges, or out-of-scope hosts.
+    scoped_targets = []
+    for t in targets:
+        reason = url_blocked(t, scope_checker)
+        if reason:
+            print(f"[!] skipping {t}: {reason}", file=sys.stderr)
+            continue
+        scoped_targets.append(t)
+    if not scoped_targets:
+        print("[-] SCOPE BLOCK: every candidate target was out of scope — 0 requests sent",
+              file=sys.stderr)
+        sys.exit(3)
+    targets = scoped_targets
 
     for target in targets:
         fuzzer = ZeroDayFuzzer(target, deep=args.deep)

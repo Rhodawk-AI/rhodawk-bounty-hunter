@@ -234,6 +234,36 @@ ok "crt.sh: $(wc -l < $OUT/subdomains/crtsh.txt) entries"
 cat "$OUT"/subdomains/*.txt 2>/dev/null | sort -u > "$OUT/subdomains/all_subs.txt"
 ok "Total unique subdomains: $(wc -l < $OUT/subdomains/all_subs.txt)"
 
+# ── Post-enumeration scope filter (B3 / R-16) ────────────────────────────────
+# Enumeration sources (subfinder / amass / crt.sh) return whatever the wild
+# internet recorded for the base domain — permuted, stale, and attacker-
+# influenceable. Every discovered subdomain is screened through the SAME
+# deterministic scope decision as the pre-flight gate BEFORE httpx probes
+# anything, so a wildcard DNS entry or a poisoned certificate record can never
+# turn into live probe traffic against a host the program never scoped.
+# Dropped hosts are quarantined for review, not silently deleted.
+if [ "$NO_SCOPE_CHECK" = false ] && [ -s "$OUT/subdomains/all_subs.txt" ]; then
+    log "Scope filter: screening discovered subdomains before probing..."
+    if python3 "$TOOLS_DIR/tools/scope_checker.py" \
+            ${_FULLHUNT_SCOPE_ARGS[@]+"${_FULLHUNT_SCOPE_ARGS[@]}"} \
+            --input-file "$OUT/subdomains/all_subs.txt" \
+            --dropped-file "$OUT/subdomains/scope_dropped.txt" \
+            >/dev/null 2>&1; then
+        _dropped_n=0
+        [ -f "$OUT/subdomains/scope_dropped.txt" ] && \
+            _dropped_n="$(wc -l < "$OUT/subdomains/scope_dropped.txt" | tr -d ' ')"
+        [ "$_dropped_n" -gt 0 ] 2>/dev/null && \
+            warn "Scope filter dropped $_dropped_n out-of-scope subdomain(s) (see subdomains/scope_dropped.txt)"
+        if [ ! -s "$OUT/subdomains/all_subs.txt" ]; then
+            warn "Every discovered subdomain was out of scope — 0 live probes will be sent (enumeration output only)"
+        fi
+    else
+        err "SCOPE BLOCK: scope filter FAILED for subdomains/all_subs.txt — aborting instead of probing unfiltered enumeration output"
+        _rhodawk_fullhunt_audit_block "post-enumeration scope filter failed for all_subs.txt"
+        exit 3
+    fi
+fi
+
 # ── Probe live subdomains ─────────────────────────────────────────────────────
 if [ "$(check_tool httpx)" = true ]; then
     log "Probing live subdomains..."

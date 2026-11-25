@@ -50,6 +50,19 @@ done
 
 [ -z "$URL" ] && { err "GraphQL endpoint URL required"; exit 2; }
 
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh / vuln_scanner.sh: a resolvable
+# compiled_scope.json must pass SHA-256 verification (missing/tampered =
+# exit 3 + JSONL audit), and the endpoint URL must be inside the verified
+# manifest before any introspection query is sent.
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="graphql_audit.sh"
+if ! rhodawk_scope_gate_init "" "$URL"; then
+  err "scope gate blocked the run (exit 3) — 0 probes sent"; exit 3
+fi
+rhodawk_scope_gate_check "$URL" || { err "0 probes sent"; exit 3; }
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
