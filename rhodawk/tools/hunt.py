@@ -189,14 +189,15 @@ def expand_cidr(cidr: str, max_hosts: int = MAX_CIDR_HOSTS) -> list[str]:
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(TOOLS_DIR)
-# Writable output honors RHODAWK_HOME (falls back to the install dir when it is
-# writable — a git clone — else ~/.rhodawk for a read-only pip install).
+# Runtime data home: $RHODAWK_HOME when set, else ~/.rhodawk. The install
+# directory is deliberately NOT used as a fallback: honoring writability of
+# BASE_DIR made a plain `pytest` run (and any hunt from a git clone) write
+# recon/findings/targets into the source tree, which then leaked into built
+# wheels (release audit R-01). BASE_DIR stays read-only (wordlists, tools).
 def _bh_home():
     env = get_env("RHODAWK_HOME")
     if env:
         return os.path.expanduser(env)
-    if os.access(BASE_DIR, os.W_OK):
-        return BASE_DIR
     return os.path.join(os.path.expanduser("~"), ".rhodawk")
 _DATA_HOME = _bh_home()
 TARGETS_DIR = os.path.join(_DATA_HOME, "targets")

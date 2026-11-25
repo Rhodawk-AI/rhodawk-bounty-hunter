@@ -353,7 +353,10 @@ fi
 # cicd_scanner — sisakulint wrapper script (optional: --with-cicd-scanner)
 if [ "$INSTALL_CICD_SCANNER" = true ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    CICD_SCANNER_SRC="$SCRIPT_DIR/tools/cicd_scanner.sh"
+    # Audit R-13: the script lives at rhodawk/tools/cicd_scanner.sh since the
+    # v2.0 package rename — the old root-level tools/ path never existed here,
+    # so --with-cicd-scanner silently did nothing (the -f guard skipped it).
+    CICD_SCANNER_SRC="$SCRIPT_DIR/rhodawk/tools/cicd_scanner.sh"
     if [ -f "$CICD_SCANNER_SRC" ]; then
         INSTALL_DIR="/usr/local/bin"
         if cp "$CICD_SCANNER_SRC" "$INSTALL_DIR/cicd_scanner" 2>/dev/null || \

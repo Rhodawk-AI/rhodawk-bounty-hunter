@@ -55,7 +55,7 @@ done
 # ---------------------------------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 HOST=$(echo "$URL" | awk -F/ '{print $3}' | tr -d '[:space:]')
-OUT_DIR="${OUT_DIR:-$(pwd)/findings/graphql/${HOST}/${TIMESTAMP}}"
+OUT_DIR="${OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/graphql/${HOST}/${TIMESTAMP}}"
 mkdir -p "$OUT_DIR"
 
 SUMMARY="$OUT_DIR/summary.txt"
@@ -77,10 +77,18 @@ _gql_post() {
 
 # shellcheck source=banner.sh
 . "$SCRIPT_DIR/banner.sh"
+# Audit R-09: the banner must never expand the raw credential values. The old
+# line appended ${COOKIE:-}/${AUTH_HEADER:-} (i.e. the verbatim session cookie
+# and auth header) into the banner output, which is printed to stdout and
+# stored with findings. Describe the auth state instead.
+_auth_desc=""
+[ -n "${COOKIE:-}" ]      && _auth_desc="cookie set"
+[ -n "${AUTH_HEADER:-}" ] && _auth_desc="${_auth_desc:+$_auth_desc, }header set"
+[ -z "$_auth_desc" ]      && _auth_desc="(none)"
 print_banner "GraphQL Security Audit" "$URL" \
     "Phases|introspection . fingerprint . field-discovery . batching . alias . injection . cop" \
     "Output|$OUT_DIR" \
-    "Auth|${COOKIE:+cookie set}${AUTH_HEADER:+header set}${COOKIE:-}${AUTH_HEADER:-(none)}"
+    "Auth|$_auth_desc"
 
 # ---------------------------------------------------------------------------
 # Phase 0: Connectivity check

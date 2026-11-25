@@ -289,7 +289,10 @@ fi
 if [ -n "${RECON_OUT_DIR:-}" ]; then
     RECON_DIR="$RECON_OUT_DIR"
 else
-    RECON_DIR="$BASE_DIR/recon/$TARGET${TARGET_PORT:+_$TARGET_PORT}"
+    # Audit R-01: standalone default goes to the data home, never
+    # $BASE_DIR/recon (a hunt launched from a git clone used to write its
+    # session tree into the source/package directory, polluting builds).
+    RECON_DIR="${RHODAWK_HOME:-$HOME/.rhodawk}/recon/$TARGET${TARGET_PORT:+_$TARGET_PORT}"
 fi
 
 # ── Compiled scope manifest (Commit 3): detect BEFORE rate-limit defaults ────

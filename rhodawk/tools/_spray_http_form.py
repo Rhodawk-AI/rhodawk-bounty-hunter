@@ -45,14 +45,19 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-# Permissive SSL — fallback to unverified only if certifi is unavailable
+# TLS verification (mirrors _spray_oauth.py — SECURITY-REVIEW-2026-08-22.md
+# finding #9): certifi when available, else the system CA store via
+# ssl.create_default_context(), which is already a verifying context. Never
+# disable verification: this fallback used to disable verification outright
+# whenever certifi (not a declared dependency) was missing, silently
+# exposing every credential-bearing spray request to MITM on any stock
+# install.
 SSL_CTX = ssl.create_default_context()
 try:
     import certifi
     SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
-    SSL_CTX.check_hostname = False
-    SSL_CTX.verify_mode = ssl.CERT_NONE
+    SSL_CTX = ssl.create_default_context()
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"
 

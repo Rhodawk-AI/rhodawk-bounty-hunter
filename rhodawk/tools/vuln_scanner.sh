@@ -388,7 +388,10 @@ if ! skip_has ssti; then
             for idx in "${!SSTI_ENGINES[@]}"; do
                 engine="${SSTI_ENGINES[$idx]}"
                 payload="${SSTI_PAYLOADS[$idx]}"
-                enc_payload=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$payload'''))" 2>/dev/null || echo "$payload")
+                # Audit R-15: payload via sys.argv[1] — the old form interpolated
+                # it into a triple-quoted Python literal, which quote/breakage
+                # hazards on any payload containing quotes or backslashes.
+                enc_payload=$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
                 injected=$(echo "$url" | sed "s/=\([^&]*\)/=${enc_payload}/g")
                 body=$(curl -sk --max-time 10 ${RHODAWK_AUTH_ARGS[@]+"${RHODAWK_AUTH_ARGS[@]}"} "$injected" 2>/dev/null || true)
                 if echo "$body" | grep -qE '(\b49\b|7777777)'; then

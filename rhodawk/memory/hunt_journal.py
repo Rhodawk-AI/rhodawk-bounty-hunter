@@ -9,10 +9,25 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 from pathlib import Path
 
 from memory.rotation import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_if_needed
 from memory.schemas import SchemaError, validate_journal_entry
+
+
+def default_memory_root() -> Path:
+    """Data-home aware default for hunt-memory output.
+
+    $RHODAWK_HOME/hunt-memory when set, else ~/.rhodawk/hunt-memory. The old
+    CWD-relative default (./hunt-memory) made every caller without an
+    explicit directory drop runtime artifacts into whatever directory the
+    process happened to run in — including the source tree during pytest —
+    and those artifacts leaked into built wheels (release audit R-01).
+    """
+    env = os.environ.get("RHODAWK_HOME")
+    base = Path(env).expanduser() if env else Path.home() / ".rhodawk"
+    return base / "hunt-memory"
 
 
 class HuntJournal:
@@ -62,8 +77,8 @@ class HuntJournal:
 
 def default_journal_path(memory_dir: str | Path | None = None) -> Path:
     """Resolve journal.jsonl under a hunt-memory directory."""
-    root = Path(memory_dir) if memory_dir else Path("hunt-memory")
+    root = Path(memory_dir) if memory_dir else default_memory_root()
     return root / "journal.jsonl"
 
 
-__all__ = ["HuntJournal", "default_journal_path", "SchemaError"]
+__all__ = ["HuntJournal", "default_journal_path", "default_memory_root", "SchemaError"]

@@ -41,6 +41,11 @@ class TestHuntGraphqlAuditNoInjection:
         monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
         monkeypatch.setattr(hunt, "TOOLS_DIR", str(tmp_path / "tools"))
         monkeypatch.setattr(hunt, "BASE_DIR", str(tmp_path))
+        # Audit R-01: run_graphql_audit makedirs FINDINGS_DIR/<domain>/graphql
+        # before invoking the script — pin it so the module-level default
+        # (resolved from the environment at import time) can never point at
+        # the source tree even if the conftest pin is bypassed.
+        monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
         os.makedirs(os.path.join(tmp_path, "tools"), exist_ok=True)
         # A no-op stand-in for graphql_audit.sh so the test only checks
         # that the malicious URL string never reaches a shell.
@@ -101,3 +106,44 @@ class TestHuntTargetValidation:
         assert not marker.exists()
         assert result["success"] is False
         assert called["recon"] is False  # rejected before any shell path
+
+
+class TestNoInlinePythonInterpolation:
+    """Audit R-15 regression gate: no shell script may interpolate shell
+    variables INSIDE `python3 -c "..."` code strings. The safe pattern is to
+    pass values as sys.argv arguments. These patterns catch the two shapes
+    that shipped: open('$VAR/...') and triple-quoted '''$payload''' literals."""
+
+    PATTERNS = (
+        ("open('$", "file path interpolated into python string literal"),
+        ("open(\"'$", "file path interpolated into python string literal"),
+        ("'''$", "triple-quoted python literal interpolated with a shell value"),
+        ('"""$', 'double triple-quoted python literal interpolated with a shell value'),
+    )
+
+    def _shell_scripts(self):
+        from pathlib import Path as _P
+        root = _P(REPO_ROOT)
+        shells = []
+        for d in (root, root / "rhodawk" / "tools",
+                  root / "scripts", root / "tests", root / "npm" / "bin"):
+            if d.is_dir():
+                shells.extend(sorted(d.glob("*.sh")))
+        return [p for p in shells if p.is_file()]
+
+    def test_no_shell_vars_inside_python_c_strings(self):
+        offenders = []
+        for path in self._shell_scripts():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for pattern, why in self.PATTERNS:
+                if pattern in text:
+                    offenders.append(f"{path}: {pattern!r} ({why})")
+        assert not offenders, ("shell -> python value interpolation must go "
+                               "through sys.argv:\n" + "\n".join(offenders))
+
+    def test_safe_argv_pattern_is_still_recognized(self):
+        """The corrected call shape (argv-passed path) must not trip the gate."""
+        import re
+        sample = 'python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$OUT/x.json"'
+        assert "open(sys.argv[1])" in sample
+        assert not re.search(r"open\('\$", sample)

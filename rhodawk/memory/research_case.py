@@ -103,7 +103,13 @@ def build_false_positive_case(
 def write_research_case(case: dict, cases_dir: str | Path | None = None) -> Path:
     """Persist a validated case under hunt-memory/cases/."""
     validated = validate_research_case(case)
-    root = Path(cases_dir) if cases_dir else Path("hunt-memory") / "cases"
+    if cases_dir:
+        root = Path(cases_dir)
+    else:
+        # Data-home aware default (audit R-01): never the process CWD, which
+        # dropped case files into the source tree during pytest runs.
+        from memory.hunt_journal import default_memory_root
+        root = default_memory_root() / "cases"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{validated['case_id']}.json"
     path.write_text(json.dumps(validated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

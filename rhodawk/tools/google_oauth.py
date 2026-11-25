@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -170,18 +171,39 @@ def _generate_pkce_pair() -> tuple[str, str]:
 
 
 def _save_json_secure(path: Path, data: dict[str, Any]) -> None:
+    """Atomically persist OAuth data with a guaranteed 0600 mode (audit R-14).
+
+    Content is written to a freshly created 0600 temp file that is
+    os.replace()d over the target. The old implementation opened the target
+    with O_TRUNC (keeping whatever permissions a pre-existing file had until
+    an after-the-fact chmod whose failure was silently swallowed) — a loose
+    file stayed loose with fresh token material inside. Failure to enforce
+    the mode now aborts the write instead of being ignored."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
+        # Best effort on pre-existing parents (e.g. exotic mounts); the file
+        # itself is still protected by the mkstemp+fchmod+replace below.
         pass
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
+    payload = json.dumps(data, indent=2)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent),
+                                    prefix=".oauth-", suffix=".tmp")
+    tmp_path = Path(tmp_name)
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.close(fd)  # a failed fdopen already closed it — ignore EBADF
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_oauth_credentials() -> dict[str, Any] | None:

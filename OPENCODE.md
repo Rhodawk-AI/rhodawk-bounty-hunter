@@ -166,7 +166,7 @@ See `mcp/*/opencode-config.json` for ready-to-copy snippets.
 
 Hunt memory auto-rotates at 10MB. To manually rotate:
 ```bash
-python3 -m tools.memory_gc --rotate
+python3 -m rhodawk.tools.memory_gc --rotate
 ```
 
 ## API Keys
@@ -194,7 +194,7 @@ Same as Claude Code version. See main README.md for:
 | Commands | `/recon target.com` | "recon target.com" |
 | Skills location | `~/.claude/skills/` | `.opencode/skills/` (in project) |
 | Commands location | `~/.claude/commands/` | `.opencode/commands/` (in project) |
-| Memory rotation | Auto (Stop hook) | Manual (`python3 -m tools.memory_gc --rotate`) |
+| Memory rotation | Auto (Stop hook) | Manual (`python3 -m rhodawk.tools.memory_gc --rotate`) |
 | MCP config | `.claude/settings.json` | `opencode.json` (project) or `~/.config/opencode/config.json` (global) |
 
 ## Troubleshooting

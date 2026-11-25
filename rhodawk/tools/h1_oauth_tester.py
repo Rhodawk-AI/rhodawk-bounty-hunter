@@ -246,7 +246,9 @@ def check_ssrf_webhook():
 def main():
     parser = argparse.ArgumentParser(description="HackerOne Auth/OAuth Tester")
     parser.add_argument("--email", help="Your test account email (for password reset tests)")
-    parser.add_argument("--token-a", help="Account A Bearer token")
+    # Audit R-08: env fallback so tokens stay off the command line (`ps`).
+    parser.add_argument("--token-a", default=os.environ.get("RHODAWK_H1_TOKEN_A"),
+                        help="Account A Bearer token (or set RHODAWK_H1_TOKEN_A)")
     parser.add_argument("--check-cors", action="store_true", help="Check CORS on H1 endpoints")
     parser.add_argument("--check-reset", action="store_true", help="Test password reset host header injection")
     parser.add_argument("--check-oauth", action="store_true", help="Test OAuth state entropy + redirect_uri bypass")

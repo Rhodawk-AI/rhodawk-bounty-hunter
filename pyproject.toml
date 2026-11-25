@@ -43,5 +43,20 @@ include-package-data = true
 where = ["."]
 include = ["rhodawk*"]
 
+# Explicit package data (release audit R-01): the previous "**/*" wildcard
+# pulled in ANY file present in rhodawk/ at build time — including runtime
+# output (recon/, findings/, ...) that a test run or hunt left in the source
+# tree. Ship only the read-only data the package actually contains; MANIFEST.in
+# prunes the runtime directories as a second layer, and
+# tests/test_wheel_cleanliness.py is the hard gate.
 [tool.setuptools.package-data]
-rhodawk = ["**/*"]
+rhodawk = [
+    "wordlists/*",
+    "prompts/*",
+    "agents/*",
+    "mcp/**/*",
+    "memory/README.md",
+    "tools/*.sh",
+    "tools/*.js",
+    "tools/*.md",
+]

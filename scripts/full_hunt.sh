@@ -23,7 +23,9 @@ set -e
 TARGET="${1}"
 TARGETURL="https://${TARGET}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUT="recon/${TARGET}_${TIMESTAMP}"
+# Audit R-01: session tree goes to the data home, never CWD-relative
+# ./recon (a hunt from the repo root used to pollute the source tree).
+OUT="${RHODAWK_HOME:-$HOME/.rhodawk}/recon/${TARGET}_${TIMESTAMP}"
 # Commit 3 path fix: the shared tooling (_auth_helper.sh, banner.sh,
 # scope_checker.py) lives under <repo>/rhodawk/tools/ — the legacy
 # "$(dirname $0)/.." pointed at the repo ROOT, where no tools/ directory
@@ -295,7 +297,7 @@ if [ "$(check_tool ffuf)" = true ] && [ -f "$WL_DIRS" ]; then
         ${RHODAWK_AUTH_ARGS[@]+"${RHODAWK_AUTH_ARGS[@]}"} \
         -o "$OUT/content/ffuf_dirs.json" -of json \
         2>/dev/null
-    ok "ffuf dirs: $(python3 -c "import json; d=json.load(open('$OUT/content/ffuf_dirs.json')); print(len(d.get('results',[])))" 2>/dev/null || echo 0) found"
+    ok "ffuf dirs: $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get('results',[])))" "$OUT/content/ffuf_dirs.json" 2>/dev/null || echo 0) found"
 else
     warn "ffuf or wordlist not available for directory scan"
 fi
@@ -308,7 +310,7 @@ if [ "$(check_tool ffuf)" = true ] && [ -f "$WL_FILES" ] && [ "$QUICK" = false ]
         -mc 200,301,302,403 -t 30 -s \
         ${RHODAWK_AUTH_ARGS[@]+"${RHODAWK_AUTH_ARGS[@]}"} \
         -o "$OUT/content/ffuf_files.json" -of json 2>/dev/null
-    ok "ffuf files: $(python3 -c "import json; d=json.load(open('$OUT/content/ffuf_files.json')); print(len(d.get('results',[])))" 2>/dev/null || echo 0) found"
+    ok "ffuf files: $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get('results',[])))" "$OUT/content/ffuf_files.json" 2>/dev/null || echo 0) found"
 fi
 
 # ── JS analysis ───────────────────────────────────────────────────────────────

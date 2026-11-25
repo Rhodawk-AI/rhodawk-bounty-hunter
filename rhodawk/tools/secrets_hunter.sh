@@ -27,7 +27,7 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 hit()  { echo -e "${MAG}[SECRET]${NC} $1"; }
 err()  { echo -e "${RED}[-]${NC} $1" >&2; }
 
-MODE=""; TARGET=""; OUT_DIR="${SECRETS_OUT_DIR:-$(pwd)/findings/secrets/$(date +%Y%m%d_%H%M%S)}"
+MODE=""; TARGET=""; OUT_DIR="${SECRETS_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/secrets/$(date +%Y%m%d_%H%M%S)}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --filesystem)  MODE="fs";   shift; TARGET="${1:-}" ;;
@@ -80,7 +80,10 @@ _run_gitleaks() {
   gitleaks "$subcmd" --source "$target" --report-format json --report-path "$OUT_DIR/gitleaks.json" --redact \
     >/dev/null 2>&1 || true
   if [ -s "$OUT_DIR/gitleaks.json" ]; then
-    local n; n=$(python3 -c "import json; print(len(json.load(open('$OUT_DIR/gitleaks.json'))))" 2>/dev/null || echo 0)
+    # Audit R-15: pass the path as sys.argv[1] — the old inline code
+    # interpolated OUT_DIR into a python string literal, which broke (or
+    # executed) whenever OUT_DIR contained shell metacharacters.
+    local n; n=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$OUT_DIR/gitleaks.json" 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && hit "gitleaks: $n leak(s)" || ok "gitleaks: clean"
   fi
 }

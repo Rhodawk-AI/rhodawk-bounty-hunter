@@ -83,3 +83,22 @@ def test_list_antigravity_models_fallback(monkeypatch):
     assert "gemini-3.8-flash-high" in models
     assert "claude-sonnet-4-6" in models
     assert "claude-sonnet-5-5-medium" in models
+
+
+def test_save_json_secure_replaces_loose_file_atomically(tmp_path):
+    """Audit R-14: a pre-existing loose-permission file is replaced via a
+    0600 temp file + os.replace, so the fresh token material never sits in a
+    world-readable file and no temp file is left behind."""
+    import os
+    import stat as stat_mod
+    import tools.google_oauth as oauth_mod
+
+    target = tmp_path / "creds" / "oauth.json"
+    target.parent.mkdir()
+    target.write_text("{}", encoding="utf-8")
+    os.chmod(target, 0o666)
+    oauth_mod._save_json_secure(target, {"access_token": "x"})
+    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o600
+    assert '"access_token"' in target.read_text(encoding="utf-8")
+    strays = [p.name for p in target.parent.iterdir() if p.name.startswith(".oauth-")]
+    assert not strays, f"leftover temp files: {strays}"
