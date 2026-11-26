@@ -26,11 +26,11 @@ Memory layers
 
 Usage
 ─────
-  python3 agent.py --target example.com
-  python3 agent.py --target example.com --cookie "JSESSIONID=abc" --time 4
-  python3 agent.py --target example.com --scope-lock --no-brain
-  python3 agent.py --target example.com --langgraph          # force LangGraph
-  python3 agent.py --target example.com --resume SESSION_ID
+  rhodawk-agent --target example.com
+  rhodawk-agent --target example.com --cookie "JSESSIONID=abc" --time 4
+  rhodawk-agent --target example.com --scope-lock --no-brain
+  rhodawk-agent --target example.com --langgraph          # force LangGraph
+  rhodawk-agent --target example.com --resume SESSION_ID
 
 From hunt.py:
   hunt.py --target x --agent              # drops into agent mode
@@ -2176,21 +2176,22 @@ def run_agent_hunt(
 def main() -> None:
     ensure_home_migrated()
     parser = argparse.ArgumentParser(
+        prog="rhodawk-agent",
         description="ReAct hunting agent — autonomous bug bounty with Ollama tool calling",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 agent.py --target example.com
-  python3 agent.py --target example.com --time 4 --max-steps 30
-  python3 agent.py --target example.com --cookie "JSESSIONID=abc123"
-  python3 agent.py --target example.com --scope-lock --max-urls 50
-  python3 agent.py --target example.com --langgraph
-  python3 agent.py --target example.com --resume SESSION_ID
-  python3 agent.py --list-models
+  rhodawk-agent --target example.com
+  rhodawk-agent --target example.com --time 4 --max-steps 30
+  rhodawk-agent --target example.com --cookie "JSESSIONID=abc123"
+  rhodawk-agent --target example.com --scope-lock --max-urls 50
+  rhodawk-agent --target example.com --langgraph
+  rhodawk-agent --target example.com --resume SESSION_ID
+  rhodawk-agent --list-models
 
 Scope (required before any tool that sends traffic will run):
-  python3 agent.py --target example.com -d example.com -d '*.example.com'
-  python3 agent.py --target example.com -d '*.example.com' -x blog.example.com
+  rhodawk-agent --target example.com -d example.com -d '*.example.com'
+  rhodawk-agent --target example.com -d '*.example.com' -x blog.example.com
 """
     )
     parser.add_argument("--target",      required=False, help="Domain to hunt")

@@ -38,8 +38,8 @@ Keyless tools (zero credentials): h1scope, bounty-targets-data.
      or "keyless_public".
 
 CLI:
-  python3 rhodawk/tools/credentials.py --setup    # interactive wizard
-  python3 rhodawk/tools/credentials.py --verify   # redacted status JSON
+  python3 -m rhodawk.tools.credentials --setup    # interactive wizard
+  python3 -m rhodawk.tools.credentials --verify   # redacted status JSON
 """
 
 from __future__ import annotations
@@ -489,7 +489,7 @@ def write_env_file(values: dict[str, str], path: Path | None = None) -> Path:
         "# Perms: 0600 (auto-tightened) · directory ~/.rhodawk is 0700.",
         '# A blank value ("") means "not configured" — downstream tools treat',
         "# it as unset. Fill values in directly, or re-run:",
-        "#   python3 rhodawk/tools/credentials.py --setup",
+        "#   python3 -m rhodawk.tools.credentials --setup",
         "# NEVER commit this file or paste its values into chat/tickets/logs.",
         "",
     ]

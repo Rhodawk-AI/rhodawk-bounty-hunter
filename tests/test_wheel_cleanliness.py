@@ -16,9 +16,11 @@ This module guards the remaining invariant:
 """
 
 import importlib.util
+import io
 import re
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -104,3 +106,63 @@ class TestSourceTreeNotPrePolluted:
         )
         assert proc.returncode == 1
         assert "rhodawk/recon/target.com/subdomains.txt" in proc.stdout
+
+
+class TestSdistGate:
+    """v2.0.1: the gate covers .tar.gz / .tgz sdists too — the usage line
+    always advertised <wheel-or-sdist>, but only zipfile was wired, so a
+    plain `python3 tests/check_wheel_clean.py dist/*` crashed with
+    zipfile.BadZipFile on the sdist."""
+
+    @staticmethod
+    def _write_sdist(path: Path, entries) -> Path:
+        with tarfile.open(path, "w:gz") as tf:
+            for name, payload in entries:
+                data = payload.encode("utf-8")
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        return path
+
+    def test_clean_wheel_and_sdist_pass_in_one_invocation(self, tmp_path):
+        whl = tmp_path / "fake-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(whl, "w") as zf:
+            zf.writestr("fake/__init__.py", "__version__ = '1.0'\n")
+        sdist = self._write_sdist(tmp_path / "fake-1.0.tar.gz", [
+            ("fake-1.0/PKG-INFO", "Metadata-Version: 2.1\n"),
+            ("fake-1.0/fake/__init__.py", "__version__ = '1.0'\n"),
+        ])
+        proc = subprocess.run(
+            [sys.executable, str(CHECKER), str(whl), str(sdist)],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout.count("CLEAN") == 2
+
+    def test_dirty_sdist_fails_with_member_names(self, tmp_path):
+        sdist = self._write_sdist(tmp_path / "fake-1.0.tar.gz", [
+            ("fake-1.0/fake/__init__.py", ""),
+            # runtime artifact under the sdist's versioned top-level dir
+            ("fake-1.0/recon/target.com/subdomains.txt", "x\n"),
+            # memory-module stray underneath the rhodawk package dir
+            ("rhodawk-1.0/rhodawk/memory/leads/target.com.jsonl", "x\n"),
+        ])
+        proc = subprocess.run(
+            [sys.executable, str(CHECKER), str(sdist)],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 1
+        assert "POLLUTED" in proc.stdout
+        assert "fake-1.0/recon/target.com/subdomains.txt" in proc.stdout
+        assert "rhodawk-1.0/rhodawk/memory/leads/target.com.jsonl" in proc.stdout
+
+    def test_tgz_suffix_supported(self, tmp_path):
+        sdist = self._write_sdist(tmp_path / "fake-1.0.tgz", [
+            ("fake-1.0/fake/__init__.py", ""),
+        ])
+        proc = subprocess.run(
+            [sys.executable, str(CHECKER), str(sdist)],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "CLEAN" in proc.stdout
