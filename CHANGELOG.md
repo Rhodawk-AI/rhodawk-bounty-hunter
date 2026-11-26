@@ -3,6 +3,32 @@
 All notable changes to RhodawkAI Bounty Hunter are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: SemVer.
 
+## [2.0.4] — 2026-11-26
+
+Live-sandbox fixes: three bugs observed running v2.0.3 in a fresh sandbox.
+
+### Fixed
+
+- **recon: `.run_incomplete` directory race.** The B6 marker
+  (`touch "$RECON_DIR/.run_incomplete"`) ran before the recon directory
+  existed on a brand-new target — live failure: `touch: cannot touch
+  '/sandbox/home/.rhodawk/recon/target.local/.run_incomplete': No such file
+  or directory`. `recon_engine.sh` now runs `mkdir -p "$RECON_DIR"`
+  immediately before the touch; the `.prev_run` rotation of a leftover
+  incomplete run is unchanged.
+- **recon: ffuf soft-200 false-positive flood.** SPA targets (Angular, OWASP
+  Juice Shop) answer every nonexistent route with HTTP 200 and a constant
+  body (e.g. Size: 9831 / Words: 468 / Lines: 34), flooding ffuf with 100%
+  false positives until timeout. The Phase 6 ffuf invocation now passes
+  `-ac` (auto-calibration) so catch-all responses are filtered; scope,
+  rate-limit, header and output flags are unchanged.
+- **mcp: `rhodawk mcp doctor` stale CWD-relative memory path.** Doctor still
+  reported `RHODAWK_MEMORY_DIR=hunt-memory exists=False` after v2.0.3
+  unified adapters onto the data home. It now resolves through
+  `adapters._memory_root()` (explicit `RHODAWK_MEMORY_DIR` wins, else
+  `$RHODAWK_HOME`/`~/.rhodawk` + `hunt-memory`), reporting the exact path
+  the runtime reads and writes.
+
 ## [2.0.3] — 2026-11-26
 
 Pre-launch audit fixes: one state root for every runtime, data-home auto

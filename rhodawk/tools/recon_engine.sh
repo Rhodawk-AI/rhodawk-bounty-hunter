@@ -576,6 +576,10 @@ if [ -d "$RECON_DIR" ] && [ -n "$(ls -A "$RECON_DIR" 2>/dev/null)" ]; then
 fi
 
 # B6: mark this run incomplete until a clean exit removes the marker.
+# The recon dir may not exist yet on a brand-new target (the rotation block
+# above only runs when $RECON_DIR is already populated), so create it first —
+# a bare touch used to fail with "No such file or directory" (v2.0.4).
+mkdir -p "$RECON_DIR"
 touch "$RECON_DIR/.run_incomplete"
 
 mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params}
@@ -1320,6 +1324,7 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
             ffuf -u "${url}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
+                -ac \
                 -t "$THREADS" \
                 -rate "$RATE_LIMIT" \
                 -sf \

@@ -69,8 +69,20 @@ def cmd_doctor() -> int:
             print(f"[!] {mod}: {e}")
             ok = False
 
-    # memory / config
-    mem = Path(get_env("RHODAWK_MEMORY_DIR", default="hunt-memory"))
+    # memory / config — resolve through the same root adapters.py reads and
+    # writes (explicit RHODAWK_MEMORY_DIR wins, else the data home +
+    # /hunt-memory). The old CWD-relative "hunt-memory" default reported a
+    # path no runtime ever populated (v2.0.4).
+    if str(_DIR) not in sys.path:
+        sys.path.insert(0, str(_DIR))
+    try:
+        from adapters import _memory_root  # flat/script execution
+        mem = _memory_root()
+    except ImportError:  # pragma: no cover — mirror of adapters._memory_root
+        _env = get_env("RHODAWK_MEMORY_DIR")
+        _home = get_env("RHODAWK_HOME")
+        _base = Path(_home).expanduser() if _home else Path.home() / ".rhodawk"
+        mem = Path(_env).expanduser() if _env else _base / "hunt-memory"
     print(f"[*] RHODAWK_MEMORY_DIR={mem} exists={mem.exists()}")
     cfg = Path.home() / ".rhodawk" / "config.json"
     print(f"[*] provider config {cfg} exists={cfg.exists()}")
