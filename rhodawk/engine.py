@@ -31,17 +31,17 @@ Providers (auto-detected, first available wins):
                     (default https://integrate.api.nvidia.com/v1)
 
 Usage:
-  ./engine.py setup                        one-time config wizard
-  ./engine.py recon  <target>              recon + AI surface analysis
-  ./engine.py hunt   <target>              full hunt pipeline
-  ./engine.py validate "<finding>"         7-Question Gate on a finding
-  ./engine.py report [--findings-dir DIR]  write submission-ready report
-  ./engine.py chain  [--findings-dir DIR]  build A->B->C exploit chain
-  ./engine.py triage "<finding>"           fast triage (pass/kill/downgrade)
-  ./engine.py chat                         interactive Q&A shell
-  ./engine.py models                       list available models
-  ./engine.py status                       show hunt status
-  ./engine.py providers                    show all providers + API key status
+  rhodawk setup                        one-time config wizard
+  rhodawk recon  <target>              recon + AI surface analysis
+  rhodawk hunt   <target>              full hunt pipeline
+  rhodawk validate "<finding>"         7-Question Gate on a finding
+  rhodawk report [--findings-dir DIR]  write submission-ready report
+  rhodawk chain  [--findings-dir DIR]  build A->B->C exploit chain
+  rhodawk triage "<finding>"           fast triage (pass/kill/downgrade)
+  rhodawk chat                         interactive Q&A shell
+  rhodawk models                       list available models
+  rhodawk status                       show hunt status
+  rhodawk providers                    show all providers + API key status
 """
 
 from __future__ import annotations
@@ -290,7 +290,7 @@ def cmd_setup(args):
     # Bugcrowd, Intigriti, YesWeHack, PDCP, Chaos, LLM keys) before the
     # provider wizard, so recon + platform tools leave setup fully wired.
     # Skipped on non-TTY stdin (CI / piped runs) — run
-    # `python3 rhodawk/tools/credentials.py --setup` instead.
+    # `python3 -m rhodawk.tools.credentials --setup` instead.
     _run_onboarding = None
     try:
         sys.path.insert(0, str(HERE))
@@ -309,7 +309,7 @@ def cmd_setup(args):
             print()
         else:
             info("Skipping interactive credential bootstrap (no TTY) — run later:")
-            info("  python3 rhodawk/tools/credentials.py --setup")
+            info("  python3 -m rhodawk.tools.credentials --setup")
 
     providers = {
         "1":  ("ollama",     "Ollama     (local, FREE)       — needs ollama running locally"),
@@ -663,7 +663,7 @@ def cmd_providers(args):
         print(f"  {BOLD}{prov:<14}{NC} {tier[prov]:<16} {status:<32} {DIM}{note}{NC}{marker}")
 
     print(f"\n  Config: {CONFIG}")
-    print(f"  Change: ./engine.py setup\n")
+    print(f"  Change: rhodawk setup\n")
 
 
 def cmd_models(args):
@@ -672,7 +672,7 @@ def cmd_models(args):
     provider = getattr(args, "provider", None) or cfg.get("provider")
     client = _get_client(provider)
     if not client.available:
-        err(f"Provider '{client.provider}' not available. Run: ./engine.py setup")
+        err(f"Provider '{client.provider}' not available. Run: rhodawk setup")
         return
     models = client.list_models()
     info(f"Provider: {client.description}")
@@ -774,7 +774,7 @@ def cmd_recon(args):
     # return value here duplicated the entire report (once before the
     # "[+] Saved: .../01_recon_analysis.md" line, once right after). One print.
     if not result:
-        warn("AI analysis returned no output — check provider with: ./engine.py providers")
+        warn("AI analysis returned no output — check provider with: rhodawk providers")
 
 
 def cmd_hunt(args):
@@ -865,7 +865,7 @@ def cmd_report(args):
             findings_dir = str(targets[-1])
             info(f"Using findings dir: {findings_dir}")
         else:
-            err("No findings dir found. Use: ./engine.py report --findings-dir findings/<target>")
+            err("No findings dir found. Use: rhodawk report --findings-dir findings/<target>")
             sys.exit(1)
 
     header("Report Writer")
@@ -911,7 +911,7 @@ def cmd_chain(args):
     system = load_agent_prompt("chain-builder")
     client = _get_client()
     if not client.available:
-        err("No AI provider available. Run: ./engine.py setup")
+        err("No AI provider available. Run: rhodawk setup")
         sys.exit(1)
     sys.path.insert(0, str(HERE))
     from brain import BRAIN_SYSTEM  # noqa: PLC0415
@@ -926,7 +926,7 @@ def cmd_chat(args):
     header("RhodawkAI Bounty Hunter Chat")
     client = _get_client()
     if not client.available:
-        err("No AI provider available. Run: ./engine.py setup")
+        err("No AI provider available. Run: rhodawk setup")
         sys.exit(1)
 
     sys.path.insert(0, str(HERE))
@@ -959,7 +959,7 @@ def cmd_chat(args):
             print(f"\n{reply}\n")
             history.append({"user": user_input, "assistant": reply})
         else:
-            warn("No response — check provider with: ./engine.py providers")
+            warn("No response — check provider with: rhodawk providers")
 
 
 def cmd_status(args):
@@ -996,7 +996,7 @@ def cmd_status(args):
         model_note = f" | model: {model}" if model else " | model: automatic"
         print(f"{GREEN}{client.description}{model_note}{NC}")
     else:
-        print(f"{RED}not configured{NC} — run: ./engine.py setup")
+        print(f"{RED}not configured{NC} — run: rhodawk setup")
     print()
 
 
@@ -1041,7 +1041,7 @@ def cmd_doctor(args):
     missing = [t for t in core if not shutil.which(t)]
     if missing:
         record("WARN", "Core binaries", f"missing: {', '.join(missing)}",
-               "bash install_tools.sh")
+               "bash install_tools.sh   # repo checkout")
     else:
         record("PASS", "Core binaries", f"{len(core)}/{len(core)} on PATH")
 
@@ -1050,18 +1050,18 @@ def cmd_doctor(args):
     if not Path(rtw["rtw_home"]).is_dir():
         record("FAIL", "reconFTW checkout",
                f"not found at {rtw['rtw_home']} (RTW_HOME)",
-               "bash install.sh   # clones reconFTW + persists rtw_home")
+               "bash install.sh   # repo checkout — clones reconFTW + persists rtw_home")
     elif not rtw["executable"]:
         record("FAIL", "reconFTW checkout", f"{rtw['script']} is not executable",
                f'chmod +x "{rtw["script"]}"')
     elif rtw["commit_matches_pin"] is False:
         record("WARN", "reconFTW checkout",
                f"HEAD {str(rtw.get('head_commit', '?'))[:9]} != pinned snapshot",
-               "bash install.sh   # re-clone at the pinned commit")
+               "bash install.sh   # repo checkout — re-clone at the pinned commit")
     elif rtw["commit_matches_pin"] is None:
         record("WARN", "reconFTW checkout",
                "not a git checkout — pinned commit unknown",
-               "bash install.sh   # re-clone for the verified snapshot")
+               "bash install.sh   # repo checkout — re-clone for the verified snapshot")
     else:
         record("PASS", "reconFTW checkout",
                f"{str(rtw.get('head_commit', '?'))[:9]} matches pin, +x ok")
@@ -1071,11 +1071,11 @@ def cmd_doctor(args):
     if not chromium:
         record("WARN", "Managed Chromium",
                "chromium_path unset — headless SPA crawling disabled (optional)",
-               "bash install_tools.sh --browser")
+               "bash install_tools.sh --browser   # repo checkout")
     elif not (Path(chromium).is_file() and os.access(chromium, os.X_OK)):
         record("WARN", "Managed Chromium",
                f"{chromium} recorded but not executable",
-               "bash install_tools.sh --browser")
+               "bash install_tools.sh --browser   # repo checkout")
     else:
         record("PASS", "Managed Chromium", chromium)
 
@@ -1109,30 +1109,30 @@ def cmd_doctor(args):
         except Exception as exc:
             _cred_rows = None
             record("WARN", "Credential vault", f"status failed: {exc}",
-                   "python3 rhodawk/tools/credentials.py --verify")
+                   "python3 -m rhodawk.tools.credentials --verify")
         for _label, _status, _detail in (_cred_rows or []):
             record("PASS" if _status in ("READY", "KEYLESS") else "WARN",
                    _label, f"{_status}: {_detail}",
-                   "python3 rhodawk/tools/credentials.py --setup"
+                   "python3 -m rhodawk.tools.credentials --setup"
                    if _status not in ("READY", "KEYLESS") else "")
 
     cfg = load_config()
     provider = (os.environ.get("BRAIN_PROVIDER") or cfg.get("provider") or "")
     if not provider:
         record("WARN", "LLM provider", "not configured — AI analysis disabled",
-               "python3 rhodawk/engine.py setup")
+               "rhodawk setup")
     else:
         try:
             client = _get_client()
         except Exception as exc:
             client = None
             record("WARN", f"LLM provider {provider}", f"init failed: {exc}",
-                   "python3 rhodawk/engine.py setup")
+                   "rhodawk setup")
         if client is not None:
             if not getattr(client, "available", False):
                 record("WARN", f"LLM provider {provider}",
                        "configured but unavailable (key/endpoint)",
-                       "python3 rhodawk/engine.py setup")
+                       "rhodawk setup")
             else:
                 reply = ""
                 try:
@@ -1148,7 +1148,7 @@ def cmd_doctor(args):
                 else:
                     record("WARN", f"LLM provider {provider}",
                            "no READY within 4s (unreachable or slow)",
-                           "python3 rhodawk/engine.py setup")
+                           "rhodawk setup")
 
     # 5. MCP module import (rhodawk mcp doctor parity)
     mcp_cli = HERE / "mcp" / "rhodawk-mcp" / "cli.py"
@@ -1160,7 +1160,7 @@ def cmd_doctor(args):
         record("PASS", "MCP module", "cli.py imports cleanly")
     except Exception as exc:
         record("FAIL", "MCP module", f"import failed: {exc}",
-               "python3 rhodawk/mcp/rhodawk-mcp/cli.py doctor")
+               "rhodawk mcp doctor")
 
     header("Environment doctor (rhodawk doctor)")
     for status, label, detail, fix in results:
@@ -1231,6 +1231,13 @@ def cmd_scope_compile(args):
         err(f"scope compile failed: {exc}")
         sys.exit(2)
 
+    # v2.0.1: an authenticated-REST -> keyless_public fallback must never be
+    # silent. The reason is pre-redacted in scope_compiler (HTTP status codes
+    # and paths only — Authorization headers/tokens are never included).
+    if summary.get("auth_fallback_reason"):
+        warn(f"H1 authenticated REST unusable ({summary['auth_fallback_reason']}) "
+             f"— compiled in keyless_public mode")
+
     header(f"Scope manifest: {summary['program_handle']} "
            f"({summary['auth_mode']})")
     ok(f"allow patterns: {summary['allow_patterns']}")
@@ -1297,22 +1304,22 @@ def main():
     ensure_home_migrated()
     argv = _normalize_cli_argv(sys.argv[1:])
     parser = argparse.ArgumentParser(
-        prog="engine.py",
+        prog="rhodawk",
         description="Standalone RhodawkAI Bounty Hunter Engine — works without Claude Code",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""
         Free setup (zero subscription):
           curl -fsSL https://ollama.ai/install.sh | sh
           ollama pull qwen2.5:14b
-          ./engine.py setup
-          ./engine.py recon target.com
+          rhodawk setup
+          rhodawk recon target.com
 
         Free cloud (Groq — very fast):
           export GROQ_API_KEY=gsk_...
-          ./engine.py recon target.com
+          rhodawk recon target.com
 
         Switch providers anytime:
-          ./engine.py setup
+          rhodawk setup
         """),
     )
     parser.add_argument("--provider", "-p",
@@ -1427,7 +1434,7 @@ def main():
     # applied first, so platform tools (bbscope, HuntDeck, h1-brain, PDCP/
     # Chaos-backed recon) and LLM providers all see the same credentials.
     # Non-interactive here by design: the wizard runs via `rhodawk setup`
-    # or `python3 rhodawk/tools/credentials.py --setup`. Blank KEY=""
+    # or `python3 -m rhodawk.tools.credentials --setup`. Blank KEY=""
     # entries are ignored, and file permissions are auto-tightened (dir 0700,
     # file 0600). A vault failure must never kill the CLI.
     try:

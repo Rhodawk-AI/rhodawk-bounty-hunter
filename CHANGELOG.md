@@ -74,6 +74,72 @@ standalone tree). All findings carry their audit IDs.
   existed in this repo); the shell suite is wired into pytest via
   `tests/test_shell_test_suites.py` so it runs in CI.
 
+## [2.0.1] — 2026-11-26
+
+Polish pass for global (pipx / npm / npx) installs: the CLI must never speak
+in repo-checkout terms, doctor fixes must work from any directory, and the
+release gate must cover sdists.
+
+### Fixed — CLI help identity (prog names + examples)
+
+- `rhodawk --help` now prints `usage: rhodawk ...` (top-level parser
+  `prog="rhodawk"`) and every epilog example uses `rhodawk setup` /
+  `rhodawk recon target.com` instead of `./engine.py ...` — pipx and npx
+  users have no `engine.py` file to run.
+- `rhodawk-agent --help` now prints `usage: rhodawk-agent ...` and its
+  examples read `rhodawk-agent --target ...` instead of
+  `python3 agent.py --target ...`.
+- Runtime error hints in `engine.py` ("Run: ./engine.py setup",
+  "./engine.py providers", ...) use the installed `rhodawk` command.
+
+### Fixed — doctor fix hints are location-independent
+
+- All `fix:` lines emitted by `rhodawk doctor` that pointed at repo-relative
+  paths now work from any working directory:
+  `python3 rhodawk/tools/credentials.py --setup|--verify` became
+  `python3 -m rhodawk.tools.credentials --setup|--verify`,
+  `python3 rhodawk/engine.py setup` became `rhodawk setup`, and the MCP hint
+  became `rhodawk mcp doctor`.
+- Repo-only scripts (`install.sh`, `install_tools.sh`) are now explicitly
+  labeled `# repo checkout` so users on pipx/npm installs are not sent
+  hunting for files they do not have.
+- The credential vault header and module docstring advertise the
+  module-invocable form too.
+
+### Fixed — scope-compile H1 credential auto-load + silent-fallback warning
+
+- `rhodawk scope-compile` loads the credential vault
+  (`credentials.load_credentials()`: `$RHODAWK_CREDENTIALS_FILE` ->
+  `~/.rhodawk/.env` -> `/root/.secrets/h1_api`) BEFORE checking
+  `H1_USERNAME` / `H1_API_TOKEN`, and gains a second-chance loader for
+  relocated data homes: `$RHODAWK_HOME/.env`.
+- The authenticated-REST path now accepts the combined `H1_TOKEN=user:token`
+  form directly (plus the bare-token form), so a vault that only recorded
+  `H1_TOKEN` still drives authenticated mode instead of dropping to
+  `keyless_public` (GraphQL).
+- When authenticated REST fails (HTTP 401/403/404/...) and the compiler
+  falls back to public sources, the CLI prints a one-line warning carrying
+  the redacted reason (HTTP status code, never the token); the manifest
+  summary records it as `auth_fallback_reason` too.
+
+### Fixed — sdist coverage in the wheel-cleanliness gate
+
+- `tests/check_wheel_clean.py` inspects `.tar.gz` / `.tgz` sdists via
+  `tarfile.open(..., "r:gz")` alongside `.whl` / `.zip` via
+  `zipfile.ZipFile`, so `python3 tests/check_wheel_clean.py dist/*` checks
+  wheel AND sdist in one pass instead of crashing with
+  `zipfile.BadZipFile` on the sdist (its usage line already advertised
+  `<wheel-or-sdist>`).
+- The memory-stray detector now handles the versioned top-level directory of
+  an sdist (`rhodawk-2.0.1/rhodawk/memory/...`), and unreadable archives are
+  reported as `ERROR:` lines instead of tracebacks.
+
+### Changed — version
+
+- 2.0.0 -> 2.0.1 across `pyproject.toml`, `rhodawk/__init__.py`,
+  `.claude-plugin/plugin.json` and `npm/package.json`
+  (`@rhodawkai/bounty-hunter` stays aligned with `npm/README.md`).
+
 ## [2.0.0] — 2026-11-25
 
 Initial **standalone** release of **RhodawkAI Bounty Hunter** — the first

@@ -39,8 +39,8 @@ Output:
   mirror     : ~/.rhodawk/scope/<handle>_compiled_scope.json
 
 CLI:
-  python3 rhodawk/tools/scope_compiler.py cloudflare
-  python3 rhodawk/tools/scope_compiler.py https://hackerone.com/cloudflare?type=team \
+  python3 -m rhodawk.tools.scope_compiler cloudflare
+  python3 -m rhodawk.tools.scope_compiler https://hackerone.com/cloudflare?type=team \
       [--output <path>] [--h1scope-csv <path>] [--huntdeck-db <path>] \
       [--bbscope-cache <path>]
 
@@ -696,6 +696,48 @@ def _redact_exception(exc: Exception) -> str:
     return text[:200]
 
 
+def _h1_env_pair() -> tuple[str, str]:
+    """H1 Basic-auth pair from the environment: H1_USERNAME + H1_API_TOKEN,
+    or the combined H1_TOKEN=user:token form. A bare H1_TOKEN without a
+    colon counts as the API token alone (mirrors credentials._derive_h1_pair)."""
+    username = os.environ.get("H1_USERNAME", "")
+    token = os.environ.get("H1_API_TOKEN", "")
+    if not (username and token):
+        combined = os.environ.get("H1_TOKEN", "")
+        if combined:
+            user, sep, tok = combined.partition(":")
+            if sep:
+                username = username or user
+                token = token or tok
+            else:
+                token = token or combined
+    return username, token
+
+
+def _load_data_home_env() -> None:
+    """Second-chance credential load for relocated data homes (v2.0.1).
+
+    credentials.load_credentials() reads the standard vault
+    (~/.rhodawk/.env, $RHODAWK_CREDENTIALS_FILE, /root/.secrets/h1_api).
+    When $RHODAWK_HOME points somewhere else, scope-compile must still find
+    the HackerOne credentials BEFORE falling back to keyless mode — export
+    H1_USERNAME / H1_API_TOKEN / H1_TOKEN from $RHODAWK_HOME/.env into the
+    process environment. Values are only exported, never printed or logged.
+    """
+    base = os.environ.get("RHODAWK_HOME", "").strip()
+    if not base:
+        return
+    env_file = Path(base).expanduser() / ".env"
+    try:
+        text = env_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    for key, value in _credentials.parse_env_text(text).items():
+        if key in ("H1_USERNAME", "H1_API_TOKEN", "H1_TOKEN") and value \
+                and not os.environ.get(key):
+            os.environ[key] = value
+
+
 def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
                         rest_fn=None, graphql_fn=None,
                         bounty_targets_fn=None) -> dict:
@@ -707,6 +749,10 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
     to public sources with a redacted note. Returns:
       {"handle", "program_name", "offers_bounties", "policy_md", "assets",
        "auth_mode", "sources", "notes"}
+
+    When an authenticated-REST run fell back to keyless_public, the result
+    also carries "auth_fallback_reason": a one-line, token-free reason
+    (HTTP status codes / paths only) surfaced by the CLI as a warning.
     """
     handle = normalize_handle(handle_or_url)
     rest_fn = rest_fn or _rest_request
@@ -714,13 +760,24 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
     bounty_targets_fn = bounty_targets_fn or fetch_bounty_targets_program
 
     notes: list[str] = []
+    auth_fallback_reason: str | None = None
     if creds is None:
+        # Load the credential vault (~/.rhodawk/.env and friends) into the
+        # environment BEFORE any H1_USERNAME / H1_API_TOKEN / H1_TOKEN check.
         creds = _credentials.load_credentials(interactive=False)
     auth_mode = creds.get("auth_mode", "keyless_public")
+    if auth_mode != "authenticated_rest":
+        # Relocated data home ($RHODAWK_HOME/.env): second chance before
+        # declaring the run keyless (v2.0.1 — a READY vault must never
+        # silently drop scope-compile down to the public GraphQL path).
+        _load_data_home_env()
+        env_user, env_token = _h1_env_pair()
+        if env_user and env_token:
+            creds = {**creds, "auth_mode": "authenticated_rest"}
+            auth_mode = "authenticated_rest"
 
     if auth_mode == "authenticated_rest":
-        username = os.environ.get("H1_USERNAME", "")
-        token = os.environ.get("H1_API_TOKEN", "")
+        username, token = _h1_env_pair()
         if username and token:
             auth_header = _basic_auth(username, token)
             try:
@@ -742,12 +799,15 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
                 }
             except Exception as exc:  # noqa: BLE001 — any REST failure falls
                 # back to public sources; notes carry redacted status text only.
+                auth_fallback_reason = _redact_exception(exc)
                 notes.append(
-                    f"authenticated REST failed ({_redact_exception(exc)}) — "
+                    f"authenticated REST failed ({auth_fallback_reason}) — "
                     f"falling back to public sources")
         else:
-            notes.append("auth mode authenticated_rest but H1 env vars absent "
-                         "— falling back to public sources")
+            auth_fallback_reason = ("H1 credentials absent from the "
+                                    "environment after vault load")
+            notes.append("auth mode authenticated_rest but H1_USERNAME/"
+                         "H1_API_TOKEN not set — falling back to public sources")
 
     # Keyless public path: cursor-paginated GraphQL, then the dump.
     try:
@@ -759,6 +819,8 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
                         f"archived: false) ({result['pages']} pages)"],
             "notes": notes,
         })
+        if auth_fallback_reason:
+            result["auth_fallback_reason"] = auth_fallback_reason
         return result
     except ProgramNotFoundError:
         # Authoritative "no such program" — do not second-guess with mirrors.
@@ -774,6 +836,8 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
         "sources": ["bounty-targets-data:hackerone_data.json (exact handle match)"],
         "notes": notes,
     })
+    if auth_fallback_reason:
+        result["auth_fallback_reason"] = auth_fallback_reason
     return result
 
 
@@ -861,7 +925,7 @@ def compile_and_save(handle_or_url: str, *, output=None,
     if Path(paths["mirror"]).resolve() != Path(paths["primary"]).resolve():
         manifest.save(paths["mirror"])
 
-    return {
+    summary = {
         "program_handle": handle,
         "program_name": manifest.program_name,
         "auth_mode": manifest.auth_mode,
@@ -876,6 +940,11 @@ def compile_and_save(handle_or_url: str, *, output=None,
         "manifest_sha256": manifest.manifest_sha256[:16],
         "drift_count": len(manifest.drift_audit),
     }
+    # v2.0.1: surface WHY an authenticated run fell back to keyless mode
+    # (pre-redacted — HTTP status codes only, never the token itself).
+    if fetched.get("auth_fallback_reason"):
+        summary["auth_fallback_reason"] = fetched["auth_fallback_reason"]
+    return summary
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

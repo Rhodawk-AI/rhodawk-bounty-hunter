@@ -1,6 +1,6 @@
 {
   "name": "@rhodawkai/bounty-hunter",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "RhodawkAI Bounty Hunter CLI wrapper — fail-closed, CDN-aware autonomous bug bounty reconnaissance & attack-surface prioritization.",
   "license": "MIT",
   "author": "RhodawkAI <manager@rhodawkai.com>",
