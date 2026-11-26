@@ -21,6 +21,45 @@ except ImportError:  # flat / script execution — resolve package dir
 REPO = Path(__file__).resolve().parents[2]
 
 
+# ── State roots ────────────────────────────────────────────────────────────────
+# REPO is the CODE root (tools/, mcp servers, shell scripts — the package
+# install tree). Runtime data (recon/, findings/, reports/, hunt-memory/)
+# lives under the DATA HOME, resolved exactly like rhodawk/engine.py
+# ::_data_home(): $RHODAWK_HOME else ~/.rhodawk, with the install tree never
+# used as a fallback. Tree-rooted writes leaked into built wheels (release
+# audit R-01) and split MCP state from the CLI/agent state (pre-launch
+# audit G1): every runtime read/write below goes through the helpers.
+
+def _data_home() -> Path:
+    env = get_env("RHODAWK_HOME")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".rhodawk"
+
+
+def _recon_root() -> Path:
+    return _data_home() / "recon"
+
+
+def _findings_root() -> Path:
+    return _data_home() / "findings"
+
+
+def _reports_root() -> Path:
+    return _data_home() / "reports"
+
+
+def _memory_root() -> Path:
+    """Mirrors memory/hunt_journal.default_memory_root(): an explicit
+    RHODAWK_MEMORY_DIR wins; otherwise hunt-memory lives under the data home.
+    The old CWD-relative default ("hunt-memory") pointed at a directory the
+    journal/research writers never populated (pre-launch audit G2)."""
+    env = get_env("RHODAWK_MEMORY_DIR")
+    if env:
+        return Path(env).expanduser()
+    return _data_home() / "hunt-memory"
+
+
 def _sys_path() -> None:
     import sys
     root = str(REPO)
@@ -63,7 +102,7 @@ def _filter_recon_to_scope(target: str, checker) -> dict[str, int]:
     dropped: dict[str, int] = {}
     if checker is None:
         return dropped
-    recon_dir = REPO / "recon" / target
+    recon_dir = _recon_root() / target
     for parts in _RECON_URL_FILES:
         f = recon_dir.joinpath(*parts)
         if not f.is_file():
@@ -78,15 +117,15 @@ def _filter_recon_to_scope(target: str, checker) -> dict[str, int]:
 
 
 class UnsafeTargetError(ValueError):
-    """Raised when a target/relative path would escape the repo sandbox."""
+    """Raised when a target/relative path would escape the data-home sandbox."""
 
 
 def _safe_under(base: Path, *parts: str) -> Path:
     """Join parts under `base` and confirm the result stays inside it.
 
     `target` reaches these tools from an MCP client and is explicitly untrusted
-    (server.py), so a value like '../../../../etc' must not escape REPO/recon.
-    Mirrors the resolve()+containment check rhodawk_get_finding already uses.
+    (server.py), so a value like '../../../../etc' must not escape the recon
+    root. Mirrors the resolve()+containment check rhodawk_get_finding uses.
     """
     base_r = base.resolve()
     candidate = base_r.joinpath(*parts).resolve()
@@ -121,13 +160,13 @@ def run_recon(target: str, *, timeout: int = 600, scope_checker=None) -> dict[st
     if not script.exists():
         return {"status": "failed", "error": "RESEARCH_FAILED", "reason": "recon_engine.sh missing"}
     try:
-        recon_dir = _safe_under(REPO / "recon", target)
+        recon_dir = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc)}
     env = os.environ.copy()
     env["RHODAWK_TARGET"] = target
     # Pin the output dir to the contained path so recon_engine.sh cannot be
-    # steered outside REPO/recon by a crafted target.
+    # steered outside the data home's recon root by a crafted target.
     env["RECON_OUT_DIR"] = str(recon_dir)
     # Forward the policy engine's ScopeChecker patterns so the reconFTW
     # gap-fill (recon_engine.sh Phases 1.5/5.5) runs under the same fail-closed
@@ -196,7 +235,7 @@ def run_rtw_capability(capability_id: str, target: str, *,
         return {"status": "failed", "error": "UNAVAILABLE",
                 "reason": f"rtw_adapter import failed: {exc}"}
     try:
-        recon_dir = _safe_under(REPO / "recon", target)
+        recon_dir = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc)}
     result = rtw_adapter.run_capability(
@@ -211,9 +250,9 @@ def run_rtw_capability(capability_id: str, target: str, *,
 
 def read_recon_file(target: str, relative: str, limit: int = 50) -> dict[str, Any]:
     # Both `target` and `relative` are untrusted; contain the joined path so it
-    # cannot become an arbitrary-file-read primitive outside REPO/recon.
+    # cannot become an arbitrary-file-read primitive outside the recon root.
     try:
-        path = _safe_under(REPO / "recon", target, relative)
+        path = _safe_under(_recon_root(), target, relative)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc), "target": target}
     if not path.exists():
@@ -238,7 +277,7 @@ def read_recon_file(target: str, relative: str, limit: int = 50) -> dict[str, An
 def attack_surface(target: str) -> dict[str, Any]:
     """Summarize existing recon artifacts (passive)."""
     try:
-        base = _safe_under(REPO / "recon", target)
+        base = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc), "target": target}
     if not base.is_dir():
@@ -340,7 +379,7 @@ def run_hunt(target: str, *, quick: bool = False, timeout: int = 900, scope_chec
 
 def list_findings(target: str, limit: int = 20) -> dict[str, Any]:
     try:
-        root = _safe_under(REPO / "findings", target)
+        root = _safe_under(_findings_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc), "target": target}
     if not root.is_dir():
@@ -348,7 +387,7 @@ def list_findings(target: str, limit: int = 20) -> dict[str, Any]:
     items = []
     for p in sorted(root.rglob("*"))[:200]:
         if p.is_file() and p.suffix in {".json", ".md", ".txt"}:
-            items.append(str(p.relative_to(REPO)))
+            items.append(str(p.relative_to(_data_home())))
             if len(items) >= limit:
                 break
     return {
@@ -362,7 +401,7 @@ def list_findings(target: str, limit: int = 20) -> dict[str, Any]:
 
 def get_validation(target: str) -> dict[str, Any]:
     # search validation.json under findings
-    root = REPO / "findings"
+    root = _findings_root()
     hits = list(root.rglob("validation.json")) if root.is_dir() else []
     if target:
         hits = [h for h in hits if target in str(h)]
@@ -384,13 +423,13 @@ def get_validation(target: str) -> dict[str, Any]:
 
 def generate_report_stub(target: str, finding_id: str | None = None) -> dict[str, Any]:
     """Point at existing report artifacts; do not invent content."""
-    reports = REPO / "reports" / target
-    findings = REPO / "findings" / target
+    reports = _reports_root() / target
+    findings = _findings_root() / target
     files = []
     for base in (reports, findings):
         if base.is_dir():
-            files.extend(str(p.relative_to(REPO)) for p in base.rglob("*-report.md"))
-            files.extend(str(p.relative_to(REPO)) for p in base.rglob("*report*.md"))
+            files.extend(str(p.relative_to(_data_home())) for p in base.rglob("*-report.md"))
+            files.extend(str(p.relative_to(_data_home())) for p in base.rglob("*report*.md"))
     if not files:
         return {
             "status": "completed",
@@ -410,7 +449,7 @@ def generate_report_stub(target: str, finding_id: str | None = None) -> dict[str
 
 def memory_patterns(target: str | None = None, tech: list[str] | None = None) -> dict[str, Any]:
     _sys_path()
-    mem = Path(get_env("RHODAWK_MEMORY_DIR", default="hunt-memory"))
+    mem = _memory_root()
     path = mem / "patterns.jsonl"
     if not path.exists():
         return {"status": "completed", "patterns": [], "summary": "No patterns.jsonl yet"}
@@ -434,7 +473,7 @@ def memory_patterns(target: str | None = None, tech: list[str] | None = None) ->
 
 def memory_search(query: str, target: str | None = None, limit: int = 30) -> dict[str, Any]:
     _sys_path()
-    mem = Path(get_env("RHODAWK_MEMORY_DIR", default="hunt-memory"))
+    mem = _memory_root()
     journal = mem / "journal.jsonl"
     hits = []
     q = query.lower()
@@ -696,7 +735,7 @@ def prioritized_surface(target: str, limit: int = 20) -> dict[str, Any]:
     """
     limit = max(1, min(int(limit), 50))
     try:
-        base = _safe_under(REPO / "recon", target)
+        base = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc),
                 "target": target}
@@ -796,7 +835,7 @@ def inspect_endpoint_slice(target: str, endpoint: str) -> dict[str, Any]:
     """
     endpoint = (endpoint or "").strip()
     try:
-        base = _safe_under(REPO / "recon", target)
+        base = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc),
                 "target": target}

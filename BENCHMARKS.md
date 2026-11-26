@@ -2,7 +2,7 @@
 
 Reproducible, timed 3-way reconnaissance benchmarks executed on the same Ubuntu VPS against **5 publicly authorized testing domains**, comparing:
 
-1. **RhodawkAI Bounty Hunter (`v2.0.0`)**
+1. **RhodawkAI Bounty Hunter (`v2.0.3`)**
 2. **Upstream baseline** (the pre-fork upstream project, commit `82f4512`)
 3. **Standalone `six2dez/reconftw` (`-r` mode, commit `3925211`)**
 
@@ -14,13 +14,13 @@ Reproducible, timed 3-way reconnaissance benchmarks executed on the same Ubuntu 
 - **Host:** Ubuntu Linux VPS (`8 vCPU` / `32 GB RAM`, `nyc1`)
 - **LLM Provider (RhodawkAI Edition):** NVIDIA NIM (`nvidia/nemotron-3-ultra-550b-a55b`)
 - **Target Suite:** `testphp.vulnweb.com`, `testhtml5.vulnweb.com`, `testaspnet.vulnweb.com`, `rest.vulnweb.com`, `scanme.nmap.org`
-- **Scope Enforcement:** RhodawkAI Edition ran with explicit `--scope-domain <target>`; Original Rhodawk (`recon_engine.sh`) has no native fail-closed scope flag.
+- **Scope Enforcement:** RhodawkAI Edition ran with explicit `--scope-domain <target>`; Upstream Agentic-Bug-Hunter (`recon_engine.sh`) has no native fail-closed scope flag.
 
 ---
 
 ## 1. Executive Summary (5-Domain Head-to-Head)
 
-| Metric | RhodawkAI Edition (`v6.1.1`) | Original Rhodawk (`82f4512`) | Standalone `reconFTW` (`3925211`) |
+| Metric | RhodawkAI Edition (`v2.0.3`) | Upstream Agentic-Bug-Hunter (`82f4512`) | Standalone `reconFTW` (`3925211`) |
 | :--- | :--- | :--- | :--- |
 | **Targets Completed (out of 5)** | **5 / 5** (`exit=0`) | **5 / 5** (`exit=0`) | **0 / 5** (stalled >30m in `OSINT`) |
 | **Total Wall-Clock Time** | **40m 48s** (`2,448s`) | 46m 04s (`2,764s`) | DNF (`>1,800s` on Target 1) |
@@ -36,7 +36,7 @@ Reproducible, timed 3-way reconnaissance benchmarks executed on the same Ubuntu 
 
 ### Wall-Clock Runtime
 
-| Domain | Stack | RhodawkAI (`v6.1.1`) | Original Rhodawk (`82f4512`) | Delta (RhodawkAI vs. Rhodawk) | `reconFTW -r` (`3925211`) |
+| Domain | Stack | RhodawkAI (`v2.0.3`) | Upstream Agentic-Bug-Hunter (`82f4512`) | Delta (RhodawkAI vs. Upstream) | `reconFTW -r` (`3925211`) |
 | :--- | :--- | ---: | ---: | ---: | :--- |
 | `testphp.vulnweb.com` | Apache / PHP / MySQL | **367s** (`6m 07s`) | 651s (`10m 51s`) | **-43.6%** (`-284s`) | DNF (`>1,800s` hang in `OSINT`) |
 | `testhtml5.vulnweb.com` | Nginx / Python / HTML5 | 369s (`6m 09s`) | **325s** (`5m 25s`) | +13.5% (`+44s`) | Not reached (stalled on #1) |
@@ -47,20 +47,20 @@ Reproducible, timed 3-way reconnaissance benchmarks executed on the same Ubuntu 
 
 ---
 
-### Surface Discovery Breakdown (RhodawkAI Edition vs. Original Rhodawk)
+### Surface Discovery Breakdown (RhodawkAI Edition vs. Upstream Agentic-Bug-Hunter)
 
 | Domain | Edition | Subdomains | Live Hosts | Open Ports | URLs | Parameterized | API | JS | Nuclei Hits |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `testphp.vulnweb.com` | **RhodawkAI `v6.1.1`** | **1** *(scoped)* | 0 | 0 | 12,861 | 11,776 | 3 | 0 | 0 |
-| `testphp.vulnweb.com` | Original Rhodawk `82f4512` | 44 *(unscoped)* | 0 | 0 | 12,861 | 11,776 | 3 | 0 | 0 |
-| `testhtml5.vulnweb.com` | **RhodawkAI `v6.1.1`** | 3 | 0 | 0 | 210 | 152 | 0 | 0 | 0 |
-| `testhtml5.vulnweb.com` | Original Rhodawk `82f4512` | 3 | 0 | 0 | 210 | 152 | 0 | 0 | 0 |
-| `testaspnet.vulnweb.com` | **RhodawkAI `v6.1.1`** | **1** *(scoped)* | 1 | 1 | **68** | 32 | 0 | 0 | 1 |
-| `testaspnet.vulnweb.com` | Original Rhodawk `82f4512` | 3 | 1 | 1 | 64 | 32 | 0 | 0 | 1 |
-| `rest.vulnweb.com` | **RhodawkAI `v6.1.1`** | 3 | 1 | 1 | 102 | 80 | 0 | 33 | 3 |
-| `rest.vulnweb.com` | Original Rhodawk `82f4512` | 3 | 1 | 1 | 102 | 80 | 0 | 33 | 3 |
-| `scanme.nmap.org` | **RhodawkAI `v6.1.1`** | **2** *(scoped)* | 1 | 1 | **3,187** | **33** | 0 | 1 | **2** |
-| `scanme.nmap.org` | Original Rhodawk `82f4512` | 5 | 1 | 1 | 747 | 17 | 0 | 1 | 1 |
+| `testphp.vulnweb.com` | **RhodawkAI `v2.0.3`** | **1** *(scoped)* | 0 | 0 | 12,861 | 11,776 | 3 | 0 | 0 |
+| `testphp.vulnweb.com` | Upstream Agentic-Bug-Hunter `82f4512` | 44 *(unscoped)* | 0 | 0 | 12,861 | 11,776 | 3 | 0 | 0 |
+| `testhtml5.vulnweb.com` | **RhodawkAI `v2.0.3`** | 3 | 0 | 0 | 210 | 152 | 0 | 0 | 0 |
+| `testhtml5.vulnweb.com` | Upstream Agentic-Bug-Hunter `82f4512` | 3 | 0 | 0 | 210 | 152 | 0 | 0 | 0 |
+| `testaspnet.vulnweb.com` | **RhodawkAI `v2.0.3`** | **1** *(scoped)* | 1 | 1 | **68** | 32 | 0 | 0 | 1 |
+| `testaspnet.vulnweb.com` | Upstream Agentic-Bug-Hunter `82f4512` | 3 | 1 | 1 | 64 | 32 | 0 | 0 | 1 |
+| `rest.vulnweb.com` | **RhodawkAI `v2.0.3`** | 3 | 1 | 1 | 102 | 80 | 0 | 33 | 3 |
+| `rest.vulnweb.com` | Upstream Agentic-Bug-Hunter `82f4512` | 3 | 1 | 1 | 102 | 80 | 0 | 33 | 3 |
+| `scanme.nmap.org` | **RhodawkAI `v2.0.3`** | **2** *(scoped)* | 1 | 1 | **3,187** | **33** | 0 | 1 | **2** |
+| `scanme.nmap.org` | Upstream Agentic-Bug-Hunter `82f4512` | 5 | 1 | 1 | 747 | 17 | 0 | 1 | 1 |
 
 ---
 
@@ -70,16 +70,16 @@ On a Vercel-hosted CDN domain (`rhodawkai.com`, verified on the same VPS on `202
 
 | Tool / Edition | Wall Time | CDN Edge Port-Scan Behavior |
 | :--- | ---: | :--- |
-| **RhodawkAI Edition (`v6.1.1`)** | **~5m 00s** | Classified Vercel as `CDN_EDGE` in Phase 2.5 and skipped `nmap` (**0 edge packets**, ~104–107s saved) |
-| **Original Rhodawk (`82f4512`)** | 6m 45s | Blindly port-scanned CDN edge IP |
+| **RhodawkAI Edition (`v2.0.3`)** | **~5m 00s** | Classified Vercel as `CDN_EDGE` in Phase 2.5 and skipped `nmap` (**0 edge packets**, ~104–107s saved) |
+| **Upstream Agentic-Bug-Hunter (`82f4512`)** | 6m 45s | Blindly port-scanned CDN edge IP |
 | **Standalone `reconFTW -r` (`3925211`)** | >31m (DNF) | Stalled inside `sub_brute` (`puredns`) |
 
 ---
 
 ## 4. Known Observations & Engineering Notes
 
-- **`Live hosts: 0` on `testphp` & `testhtml5`:** Both RhodawkAI Edition and Original Rhodawk recorded `Live hosts: 0` during HTTP probing on `testphp.vulnweb.com` and `testhtml5.vulnweb.com` while still collecting historical/archived URLs.
-- **Transparent Telemetry (`SKIPPED_SILENT`):** RhodawkAI Edition's `tool_health` checker surfaced an upstream `reconFTW` subshell error (`/root/Tools/reconftw/modules/utils.sh: line 1493: _is_behind_nat: command not found`) rather than silently ignoring it—tracked for a clean fix in `v6.1.2`.
+- **`Live hosts: 0` on `testphp` & `testhtml5`:** Both RhodawkAI Edition and Upstream Agentic-Bug-Hunter recorded `Live hosts: 0` during HTTP probing on `testphp.vulnweb.com` and `testhtml5.vulnweb.com` while still collecting historical/archived URLs.
+- **Transparent Telemetry (`SKIPPED_SILENT`):** RhodawkAI Edition's `tool_health` checker surfaced an upstream `reconFTW` subshell error (`/root/Tools/reconftw/modules/utils.sh: line 1493: _is_behind_nat: command not found`) rather than silently ignoring it—tracked for a clean fix in a follow-up release.
 
 ---
 
@@ -88,7 +88,7 @@ On a Vercel-hosted CDN domain (`rhodawkai.com`, verified on the same VPS on `202
 Honest accounting of what this benchmark does NOT establish:
 
 - **Single run per cell.** Every number above is one timed run — there is no variance data (no repeated runs, no confidence intervals). Wall-clock deltas smaller than run-to-run noise should be treated as noise.
-- **The fork ran scoped and the original unscoped**, so the subdomain counts are **not comparable** (`1 (scoped)` vs `44 (unscoped)` on `testphp.vulnweb.com` reflects scope filtering, not worse discovery).
+- **The fork ran scoped and upstream unscoped**, so the subdomain counts are **not comparable** (`1 (scoped)` vs `44 (unscoped)` on `testphp.vulnweb.com` reflects scope filtering, not worse discovery).
 - **The fork was slower on 3 of the 5 targets** (`testhtml5` +13.5%, `rest` +16.8%, `scanme.nmap.org` +2.3%); the total is faster only because of `testphp` and `testaspnet`.
 - **`reconFTW -r` was attempted on target 1 only** — "0/5" should read **"DNF on target 1; not attempted on 2–5"** (it stalled in OSINT/`sub_brute` past the 30-minute ceiling).
 - **`Live hosts: 0` on `testphp`/`testhtml5` for BOTH tools is unexplained** — both stacks collected historical URLs but probed no live hosts; no root cause was identified in this benchmark window.

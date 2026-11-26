@@ -58,8 +58,11 @@ _DEFAULT_CSEC = "".join((
     "mLB8sXC4z6qDAf",
 ))
 
-OAUTH_CLIENT_ID = os.environ.get("RHODAWK_GOOGLE_CLIENT_ID", _DEFAULT_CID)
-OAUTH_CLIENT_SECRET = os.environ.get("RHODAWK_GOOGLE_CLIENT_SECRET", _DEFAULT_CSEC)
+# Audit G18: resolve through _compat.get_env so the pre-2.0 spellings
+# (BUGHUNTER_GOOGLE_CLIENT_ID/_SECRET, BBHUNT_*, ...) keep working — every
+# other RHODAWK_* variable honors legacy aliases; these two silently didn't.
+OAUTH_CLIENT_ID = get_env("RHODAWK_GOOGLE_CLIENT_ID", default=_DEFAULT_CID)
+OAUTH_CLIENT_SECRET = get_env("RHODAWK_GOOGLE_CLIENT_SECRET", default=_DEFAULT_CSEC)
 
 OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/cloud-platform",

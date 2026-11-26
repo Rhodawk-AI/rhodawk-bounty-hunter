@@ -5,4 +5,4 @@ written to run from a directory on sys.path. The console-script launchers in
 __main__ put this package directory on sys.path before dispatching, so those
 flat imports keep resolving after a pip install.
 """
-__version__ = "2.0.2"
+__version__ = "2.0.3"

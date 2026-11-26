@@ -402,9 +402,15 @@ def rhodawk_list_findings(target: str, limit: int = 20) -> dict[str, Any]:
 
 @mcp.tool(title="Get finding", annotations=_ann(read_only=True))
 def rhodawk_get_finding(target: str, path: str) -> dict[str, Any]:
-    """Read a single finding artifact path under the repo (read-only, redacted)."""
-    full = (_REPO / path).resolve()
-    if not str(full).startswith(str(_REPO.resolve())):
+    """Read a single finding artifact path under the data home (read-only, redacted).
+
+    `path` is relative to $RHODAWK_HOME (findings/<target>/... as returned by
+    rhodawk_list_findings). Runtime data never lives in the package install
+    tree (pre-launch audit G1), so resolving against _REPO would read a
+    directory the CLI/agent runtimes never write."""
+    base = adapters._data_home().resolve()
+    full = (base / path).resolve()
+    if full != base and base not in full.parents:
         return {"status": "denied", "error": "AUTHORIZATION_REQUIRED", "reason": "path escape"}
     if not full.exists():
         return {"status": "completed", "summary": "not found", "path": path}

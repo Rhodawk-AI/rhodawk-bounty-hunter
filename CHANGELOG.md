@@ -3,6 +3,62 @@
 All notable changes to RhodawkAI Bounty Hunter are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: SemVer.
 
+## [2.0.3] — 2026-11-26
+
+Pre-launch audit fixes: one state root for every runtime, data-home auto
+validation, OAuth compat, and honest launch documentation.
+
+### Fixed — one state root (pre-launch audit G1)
+
+- `mcp/rhodawk-mcp/adapters.py` rooted all runtime reads/writes at the package
+  install tree (`REPO/recon`, `REPO/findings`, `REPO/reports`) while the CLI,
+  agent and shell runtimes write under `$RHODAWK_HOME`. MCP tools now resolve
+  `recon/`, `findings/`, `reports/`, `recon_truth.json` and `RECON_OUT_DIR`
+  through `_data_home()` (mirrors `engine._data_home()`), so CLI-generated
+  artifacts are visible to `rhodawk_attack_surface`, `rhodawk_subdomains`,
+  `rhodawk_list_findings`, `rhodawk_get_report` and
+  `rhodawk_prioritized_surface`, and MCP-run reconFTW results land where
+  `recon_fusion.py` and `brain.py` read them. `REPO` remains the CODE root
+  (scripts, tools, mcp servers).
+- `rhodawk_get_finding` in `mcp/rhodawk-mcp/server.py` resolved artifact paths
+  against the install tree too; it now resolves under the data home (with the
+  same containment guarantee, via a parents-based check instead of a string
+  prefix).
+
+### Fixed — MCP memory reads (G2)
+
+- `memory_patterns` / `memory_search` defaulted to a CWD-relative
+  `"hunt-memory"` directory the writers never populate. They now resolve
+  through `_memory_root()`: explicit `$RHODAWK_MEMORY_DIR` wins, else
+  `$RHODAWK_HOME/hunt-memory` — matching `memory/hunt_journal.py
+  ::default_memory_root()`.
+
+### Fixed — `validate --auto` output path (G3)
+
+- The `--auto` default output dir was package-relative
+  (`<site-packages>/rhodawk/findings/auto-<ts>`), so a global pipx install
+  wrote runtime findings into site-packages. It now defaults to
+  `<RHODAWK_HOME>/findings/auto-<ts>` via `_default_auto_out_dir()`.
+
+### Fixed — legacy OAuth env compat (G18)
+
+- `RHODAWK_GOOGLE_CLIENT_ID` / `RHODAWK_GOOGLE_CLIENT_SECRET` were read with
+  plain `os.environ.get`, silently dropping the pre-2.0
+  `BUGHUNTER_GOOGLE_CLIENT_ID` / `_SECRET` overrides. They now resolve through
+  `_compat.get_env` like every other `RHODAWK_*` variable.
+
+### Changed — docs (G16 + launch blueprint)
+
+- `BENCHMARKS.md`: edition labels reconciled to the release line
+  (`v6.1.1`/`v2.0.0` → `v2.0.3`) and "Original Rhodawk" renamed to "Upstream
+  Agentic-Bug-Hunter" so fork reviewers are not confused.
+- `README.md`: honest platform coverage (scope compilation is HackerOne-only;
+  Bugcrowd/Intigriti/YesWeHack are vault rows; any scope pinnable via
+  `--scope-domain`), a "What Changed from Upstream" comparison table, the
+  Security Architecture split into code-enforced vs LLM-assisted boundaries,
+  npm-wrapper/toolchain/no-Docker install reality, and a new Honest
+  Limitations & Responsible Use section.
+
 ## [Unreleased]
 
 Release-audit Sprint 1 — P0 hardening (security review of the v2.0.0
