@@ -7,7 +7,7 @@ Fail-closed, CDN-aware, deterministic. Zero closed-model lock-in.
 
 [![CI](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/actions/workflows/ci.yml/badge.svg)](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rhodawk-bounty-hunter?style=for-the-badge&logo=pypi&logoColor=white&color=3775A9)](https://pypi.org/project/rhodawk-bounty-hunter/)
-[![npm](https://img.shields.io/npm/v/@rhodawk-ai/bounty-hunter?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@rhodawk-ai/bounty-hunter)
+[![npm](https://img.shields.io/npm/v/@rhodawkai/bounty-hunter?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@rhodawkai/bounty-hunter)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
 
@@ -76,9 +76,9 @@ uv tool install rhodawk-bounty-hunter
 **npm (CLI wrapper around the PyPI package):**
 
 ```bash
-npm install -g @rhodawk-ai/bounty-hunter
+npm install -g @rhodawkai/bounty-hunter
 # verify the toolchain directly:
-npx @rhodawk-ai/bounty-hunter doctor
+npx @rhodawkai/bounty-hunter doctor
 ```
 
 **From source:**

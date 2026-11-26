@@ -1,11 +1,11 @@
 <div align="center">
 
-# @rhodawk-ai/bounty-hunter
+# @rhodawkai/bounty-hunter
 
 **npm CLI wrapper for [RhodawkAI Bounty Hunter](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter) —
 AI-powered bug bounty hunting, recon to report, in your terminal.**
 
-[![npm](https://img.shields.io/npm/v/@rhodawk-ai/bounty-hunter?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@rhodawk-ai/bounty-hunter)
+[![npm](https://img.shields.io/npm/v/@rhodawkai/bounty-hunter?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@rhodawkai/bounty-hunter)
 [![PyPI](https://img.shields.io/pypi/v/rhodawk-bounty-hunter?style=for-the-badge&logo=pypi&logoColor=white&color=3775A9)](https://pypi.org/project/rhodawk-bounty-hunter/)
 [![CI](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/actions/workflows/ci.yml/badge.svg)](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](https://github.com/Rhodawk-AI/rhodawk-bounty-hunter/blob/main/LICENSE)
@@ -16,7 +16,7 @@ AI-powered bug bounty hunting, recon to report, in your terminal.**
 
 ## What is this package?
 
-`@rhodawk-ai/bounty-hunter` is a thin, dependency-free Node.js launcher for the
+`@rhodawkai/bounty-hunter` is a thin, dependency-free Node.js launcher for the
 Python package [`rhodawk-bounty-hunter`](https://pypi.org/project/rhodawk-bounty-hunter/).
 It resolves and runs the `rhodawk` engine — fail-closed, CDN-aware autonomous
 bug bounty reconnaissance and attack-surface prioritization — and falls back to
@@ -26,10 +26,10 @@ bug bounty reconnaissance and attack-surface prioritization — and falls back t
 
 ```bash
 # global install (recommended)
-npm install -g @rhodawk-ai/bounty-hunter
+npm install -g @rhodawkai/bounty-hunter
 
 # or run without installing
-npx @rhodawk-ai/bounty-hunter doctor
+npx @rhodawkai/bounty-hunter doctor
 ```
 
 The wrapper exposes a single binary: `rhodawk`.
