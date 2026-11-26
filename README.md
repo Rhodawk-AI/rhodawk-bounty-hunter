@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/rhodawk-banner.png" alt="RhodawkAI Bounty Hunter" width="100%"/>
+<img src="assets/rhodawk_banner.png" alt="RhodawkAI Bounty Hunter" width="100%"/>
 
 **AI-powered bug bounty hunting — recon to report, in your terminal.**
 Fail-closed, CDN-aware, deterministic. Zero closed-model lock-in.
