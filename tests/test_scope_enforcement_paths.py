@@ -241,6 +241,9 @@ class TestMcpAdapterEnforcement:
         allf.write_text("https://api.example.com/a\nhttps://evil.com/x\n")
 
         monkeypatch.setattr(adapters, "REPO", tmp_path)
+        # G1: runtime data paths resolve under $RHODAWK_HOME, not REPO —
+        # point the data home at this test's tmp recon fixture root.
+        monkeypatch.setenv("RHODAWK_HOME", str(tmp_path))
         # recon_engine.sh "runs" successfully but produces nothing new.
         monkeypatch.setattr(adapters.subprocess, "run",
                             lambda *a, **k: type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})())

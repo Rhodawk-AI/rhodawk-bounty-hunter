@@ -927,6 +927,18 @@ def _load_auto_scope_checker(finding: dict):
         return None
 
 
+def _default_auto_out_dir() -> str:
+    """Data-home default for --auto output: <RHODAWK_HOME>/findings/auto-<ts>.
+
+    Audit G3: the old default was package-relative (../findings next to
+    tools/), so a global pipx install wrote runtime validation artifacts into
+    site-packages. Runtime data always belongs under the data home, resolved
+    exactly like engine._data_home() and adapters._data_home()."""
+    base = get_env("RHODAWK_HOME") or os.path.expanduser("~/.rhodawk")
+    return os.path.join(base, "findings",
+                        "auto-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+
 def _run_auto(finding_path: str, output_dir: str) -> int:
     """Non-interactive path: run the programmatic verifier gate on a finding
     JSON and persist validation.json. This is what the swarm coordinator, the
@@ -940,10 +952,7 @@ def _run_auto(finding_path: str, output_dir: str) -> int:
         print(f"{RED}[-] bad finding JSON: {exc}{RESET}", file=sys.stderr)
         return 3
 
-    out_dir = output_dir or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "findings",
-        "auto-" + datetime.now().strftime("%Y%m%d-%H%M%S"),
-    )
+    out_dir = output_dir or _default_auto_out_dir()
 
     # Scope is not optional on the auto path: load the same scope the harness
     # runtimes inherit (config.json scope_domains / manifest overrides) and

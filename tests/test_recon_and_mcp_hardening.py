@@ -400,12 +400,14 @@ def _load_mcp_server():
 def mcp_server(monkeypatch, tmp_path):
     """Server module with a FRESH PolicyEngine per test and stubbed active
     adapters (so no tool call ever touches the network). The adapters' REPO
-    pointer is redirected into tmp_path so recon-artifact readers see the
-    test fixture tree instead of the developer's working copy."""
+    pointer is redirected into tmp_path, and (since G1) the data home too, so
+    recon-artifact readers see the test fixture tree instead of the
+    developer's working copy."""
     mod = _load_mcp_server()
     from policy import PolicyEngine
     monkeypatch.setattr(mod, "POLICY", PolicyEngine())
     monkeypatch.setattr(mod.adapters, "REPO", tmp_path)
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path))
     monkeypatch.setattr(mod.adapters, "run_recon",
                         lambda target, **kw: {"status": "completed", "target": target})
     monkeypatch.setattr(mod.adapters, "run_hunt",
@@ -604,9 +606,10 @@ class TestBoundedSlicing:
     def test_disclosed_reports_db_enrichment_best_effort(self, mcp_server, tmp_path,
                                                          monkeypatch):
         # small surface (no URL rows / net-new rows) so the db-only host
-        # survives the top-N cut
-        self._truth(tmp_path, n_hosts=10)
-        recon = tmp_path / "recon" / "goodscope.example"
+        # survives the top-N cut. G1: recon artifacts resolve under
+        # $RHODAWK_HOME — this test homes everything under tmp_path/bh.
+        self._truth(tmp_path / "bh", n_hosts=10)
+        recon = tmp_path / "bh" / "recon" / "goodscope.example"
         truth = json.loads((recon / "recon_truth.json").read_text())
         truth["urls"] = []
         truth["new_subdomains"] = []
@@ -637,7 +640,8 @@ class TestBoundedSlicing:
 
     def test_disclosed_reports_db_absent_is_silently_skipped(self, mcp_server, tmp_path,
                                                              monkeypatch):
-        self._truth(tmp_path, n_hosts=2)
+        # G1: keep the truth fixture under the same home root the tool reads.
+        self._truth(tmp_path / "no-brain", n_hosts=2)
         monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "no-brain"))
         out = mcp_server.rhodawk_prioritized_surface(target="goodscope.example")
         assert out["status"] == "completed"

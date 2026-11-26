@@ -1,7 +1,7 @@
 {
   "name": "rhodawk-bounty-hunter",
   "description": "AI-powered bug bounty toolkit — recon, vulnerability hunting, validation gates, and submission-ready reports for HackerOne, Bugcrowd, Intigriti, and Immunefi.",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "author": {
     "name": "RhodawkAI",
     "url": "https://rhodawkai.com"

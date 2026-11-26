@@ -55,7 +55,8 @@ def isolated_homes(tmp_path, monkeypatch):
          for cap in ("CAP_ASN_ENUM", "CAP_DNS_PERMUT", "CAP_CDN_ISOLATE",
                      "CAP_JS_SOURCEMAPS", "CAP_VHOSTS", "CAP_TLS_PIVOTS",
                      "CAP_FAVICON")}))
-    # adapters pins recon outputs under REPO/recon — repoint at the sandbox.
+    # G1: runtime data now resolves under $RHODAWK_HOME (set above); keep REPO
+    # sandboxed anyway since adapters use it for the CODE root (scripts, tools).
     monkeypatch.setattr(adapters, "REPO", tmp_path / "mcp-repo")
     return home
 
