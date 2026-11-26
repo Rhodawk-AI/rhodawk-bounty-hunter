@@ -110,6 +110,7 @@ def verify_finding_programmatic(
     finding: dict,
     *,
     scope_checker=None,
+    allow_localhost_testing: bool = False,
     session_dir: str | None = None,
     memory_dir: str | None = None,
     write_dir: str | None = None,
@@ -121,6 +122,9 @@ def verify_finding_programmatic(
     when (a) no kill signal fired, (b) any required chain is proven, (c) the Q8
     identity check holds for auth classes, (d) the deterministic verifier
     confirmed the bug, and (e) a reproducible evidence record was linked.
+    The verdict additionally records ``scope_enforced`` (whether a scope
+    checker gated the verifier run); ``is_report_ready`` requires it, so an
+    unscoped run can confirm a bug but never mark it report-ready.
     """
     raw_class = finding.get("vuln_class") or finding.get("vuln_type") or ""
     canon = normalize_class(raw_class)
@@ -161,7 +165,8 @@ def verify_finding_programmatic(
             "evidence": "", "trace": [], "error": None,
         }
     else:
-        verifier = verify_finding(finding, scope_checker=scope_checker)
+        verifier = verify_finding(finding, scope_checker=scope_checker,
+                                  allow_localhost_testing=allow_localhost_testing)
         verifier_dict = verifier.to_dict()
         if verifier.skipped:
             rejection_reasons.append(f"verifier could not confirm: {verifier.oracle}")
@@ -200,9 +205,18 @@ def verify_finding_programmatic(
         except Exception as exc:  # noqa: BLE001 - evidence must never crash the gate
             rejection_reasons.append(f"evidence linking failed: {exc}")
 
-    status = "validated_finding" if (confirmed and (evidence_linked or not session_dir)) else "scanner_hit"
-    if confirmed and session_dir and not evidence_linked:
-        rejection_reasons.append("confirmed but evidence could not be linked")
+    # Evidence is MANDATORY for a validated finding — a run with no session
+    # dir cannot link evidence, so it can never reach validated_finding (this
+    # closes the old `or not session_dir` hole where a confirmed verifier with
+    # zero evidence records was stamped report-ready).
+    status = "validated_finding" if (confirmed and evidence_linked) else "scanner_hit"
+    if confirmed and not evidence_linked:
+        if session_dir:
+            rejection_reasons.append("confirmed but evidence could not be linked")
+        else:
+            rejection_reasons.append(
+                "confirmed but no session_dir — no evidence record could be "
+                "captured, so this stays an unreported scanner_hit")
     if status == "validated_finding":
         gate_verdict = "pass"
         rejection_reasons = []
@@ -213,6 +227,7 @@ def verify_finding_programmatic(
         "gate_verdict": gate_verdict,
         "technically_confirmed": technically_confirmed,
         "chain_required_unproven": chain_block,
+        "scope_enforced": scope_checker is not None,
         "vuln_class": canon or str(raw_class),
         "finding_id": finding_id,
         "evidence_id": evidence_id,
@@ -258,11 +273,20 @@ def verify_finding_programmatic(
 
 
 def is_report_ready(validation: dict) -> bool:
-    """The single predicate the report gate consults: a finding may only be
-    reported when it was programmatically validated with linked evidence."""
+    """The single predicate the report gate consults.
+
+    Report-ready requires ALL of: programmatically validated status, a
+    confirming verifier oracle, a linked evidence record, and scope
+    enforcement (the verify run must have been gated by a scope checker).
+    Older validation.json payloads that predate ``scope_enforced`` fail this
+    check — regenerate them rather than reporting unscoped."""
     if not isinstance(validation, dict):
         return False
     if validation.get("status") != "validated_finding":
+        return False
+    if not validation.get("scope_enforced", False):
+        return False
+    if not (validation.get("evidence_linked") or validation.get("evidence_id")):
         return False
     v = validation.get("verifier") or {}
     return bool(v.get("confirmed"))

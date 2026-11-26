@@ -33,6 +33,21 @@ done
 
 [ -z "$URL" ] && [ -z "$LIST" ] && { err "url or -l <file> required"; exit 2; }
 
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh / vuln_scanner.sh: $RHODAWK_SCOPE_MANIFEST
+# or a resolvable compiled_scope.json must pass SHA-256 verification (a missing
+# or tampered manifest is exit 3 + JSONL audit), and the target must be inside
+# the verified manifest before any probe is sent.
+# shellcheck source=tools/_scope_gate.sh
+
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="param_discovery.sh"
+if ! rhodawk_scope_gate_init "" "$URL"; then
+  err "scope gate blocked the run (exit 3) — 0 probes sent"; exit 3
+fi
+rhodawk_scope_gate_check "$URL" || { err "0 probes sent"; exit 3; }
+rhodawk_scope_gate_filter "$LIST" || { err "scope filter failed — 0 probes sent"; exit 3; }
+
 OUT_DIR="${PARAM_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/params/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUT_DIR"
 

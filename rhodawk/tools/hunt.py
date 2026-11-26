@@ -334,7 +334,7 @@ def run_cmd(cmd, cwd=None, timeout=600):
     try:
         proc = subprocess.Popen(
             cmd, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=cwd, preexec_fn=os.setsid,
+            text=True, cwd=cwd, start_new_session=True,
         )
         stdout, _ = proc.communicate(timeout=timeout)
         return proc.returncode == 0, stdout or ""
@@ -348,12 +348,30 @@ def run_cmd(cmd, cwd=None, timeout=600):
         return False, f"Command timed out after {timeout}s: {str(cmd)[:120]}"
     except Exception as e:
         if proc is not None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except OSError:
-                proc.kill()
-            proc.wait()
+            _kill_process_group(proc)
         return False, f"Command failed ({type(e).__name__}): {e}"
+
+
+def _kill_process_group(proc):
+    """SIGKILL the child's ENTIRE process group (child + grandchildren).
+
+    start_new_session=True makes the child a session/group leader, so one
+    killpg reaches every grandchild (subfinder's worker pool, httpx, nuclei
+    templates...) — a bare proc.kill() leaves those alive, and they keep
+    emitting network traffic long after the timeout (R-19)."""
+    if proc is None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except Exception:  # noqa: BLE001 - already dead or reaped elsewhere
+        pass
 
 
 def check_tools():
@@ -427,8 +445,10 @@ def select_targets(top_n=10):
     """Run target selector."""
     log("info", "Running target selector...")
     script = os.path.join(TOOLS_DIR, "target_selector.py")
+    # argv list (R-19): never a shell=True string — even "trusted" pieces
+    # (script path with spaces, count) go through exec argv, not a shell.
     success, output = run_cmd(
-        f'python3 "{script}" --top {top_n}',
+        ["python3", script, "--top", str(int(top_n))],
         timeout=60
     )
     print(output)
@@ -521,14 +541,15 @@ def run_recon(domain, quick=False, scope_lock=False):
 
     # Run with live output
     try:
-        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, env=child_env)
+        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, env=child_env,
+                                start_new_session=True)
         proc.wait(timeout=3600)  # 60 min timeout (CIDR ranges can be large)
         ok = proc.returncode == 0
         # Filter recon-discovered URLs to scope before any scanner reads them.
         _filter_recon_scope(domain)
         return ok
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_group(proc)
         log("err", f"Recon timed out for {domain}")
         return False
 
@@ -592,11 +613,14 @@ def run_swarm(domain, workers=6):
     log("info", f"Swarm: fanning out verifiers for {domain} ({workers} workers)...")
     scope = (_SCOPE_CHECKER.domains if _SCOPE_CHECKER and getattr(_SCOPE_CHECKER, "domains", None)
              else [domain])
-    scope_args = " ".join(f'--scope-domain "{d}"' for d in scope)
-    ok, out = run_cmd(
-        f'python3 "{script}" "{domain}" --workers {int(workers)} {scope_args}',
-        timeout=1800,
-    )
+    # argv list (R-19): scope patterns and the domain were interpolated into a
+    # shell=True string — a pattern like 'a";id;"' would have executed. exec
+    # argv cannot break out.
+    cmd = ["python3", script, domain, "--workers", str(int(workers))]
+    for d in scope:
+        cmd += ["--scope-domain", str(d)]
+    ok, out = run_cmd(cmd, timeout=1800)
+
     if out.strip():
         print(out.rstrip())
     if not ok:
@@ -721,20 +745,26 @@ def run_graphql_audit(domain):
     if _AUTH_SESSION is not None:
         _AUTH_SESSION.export_to_env(child_env)
 
+    try:
+        findings_root = _resolve_findings_dir(domain, create=True)
+    except ValueError as exc:
+        log("err", f"Refusing unsafe findings path for {domain!r}: {exc}")
+        return False
     any_ok = False
     for url in urls:
         log("info", f"GraphQL audit: {url}")
-        out_dir = os.path.join(FINDINGS_DIR, domain, "graphql")
+        out_dir = os.path.join(findings_root, "graphql")
         os.makedirs(out_dir, exist_ok=True)
         try:
             proc = subprocess.Popen(
                 ["bash", str(script), url, "--output-dir", out_dir],
                 shell=False, cwd=BASE_DIR, env=child_env,
+                start_new_session=True,
             )
             proc.wait(timeout=600)
             any_ok = any_ok or proc.returncode == 0
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_process_group(proc)
             log("err", f"GraphQL audit timed out for {url}")
     return any_ok
 
@@ -770,11 +800,12 @@ def run_vuln_scan(domain, quick=False):
     if quick:
         cmd.append("--quick")
     try:
-        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, env=child_env)
+        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, env=child_env,
+                                start_new_session=True)
         proc.wait(timeout=1800)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_group(proc)
         log("err", f"Vulnerability scan timed out for {domain}")
         return False
 
@@ -800,9 +831,12 @@ def show_status():
     # Check targets
     targets_file = os.path.join(TARGETS_DIR, "selected_targets.json")
     if os.path.exists(targets_file):
-        with open(targets_file) as f:
-            data = json.load(f)
-        print(f"  Selected targets: {data.get('total_targets', 0)}")
+        try:
+            with open(targets_file) as f:
+                data = json.load(f)
+            print(f"  Selected targets: {data.get('total_targets', 0)}")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  Selected targets: unreadable ({e})")
     else:
         print("  Selected targets: None (run target selector first)")
 
@@ -894,11 +928,12 @@ def run_cve_hunt(domain):
         proc = subprocess.Popen(
             ["bash", script, domain],
             shell=False, cwd=BASE_DIR, env=child_env,
+            start_new_session=True,
         )
         proc.wait(timeout=900)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_group(proc)
         log("err", f"CVE sweep timed out for {domain}")
         return False
 
@@ -925,11 +960,12 @@ def run_zero_day_fuzzer(domain, deep=False):
         cmd.append("--deep")
 
     try:
-        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR)
+        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR,
+                                start_new_session=True)
         proc.wait(timeout=900)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_group(proc)
         log("err", f"Zero-day fuzzer timed out for {domain}")
         return False
 

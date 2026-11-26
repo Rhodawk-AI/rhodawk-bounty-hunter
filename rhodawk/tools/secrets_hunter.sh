@@ -27,6 +27,9 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 hit()  { echo -e "${MAG}[SECRET]${NC} $1"; }
 err()  { echo -e "${RED}[-]${NC} $1" >&2; }
 
+# umask 077 (R-18): secret scans produce files full of credential material —
+# never world-readable.
+umask 077
 MODE=""; TARGET=""; OUT_DIR="${SECRETS_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/secrets/$(date +%Y%m%d_%H%M%S)}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -44,6 +47,20 @@ done
 [ -z "$MODE" ] || [ -z "$TARGET" ] && { err "mode + target required"; sed -n '12,16p' "$0"; exit 2; }
 
 mkdir -p "$OUT_DIR"
+
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh: a resolvable compiled_scope.json
+# must pass SHA-256 verification before this tool runs (missing/tampered =
+# exit 3 + JSONL audit). js-bundle mode auto-detects the session manifest from
+# the recon dir; other modes honor $RHODAWK_SCOPE_MANIFEST only.
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="secrets_hunter.sh"
+_GATE_RECON_DIR=""
+[ "$MODE" = "js" ] && _GATE_RECON_DIR="$TARGET"
+if ! rhodawk_scope_gate_init "$_GATE_RECON_DIR" ""; then
+  err "scope gate blocked the run (exit 3)"; exit 3
+fi
 
 # shellcheck source=banner.sh
 . "$SCRIPT_DIR/banner.sh"

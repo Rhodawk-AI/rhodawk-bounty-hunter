@@ -199,8 +199,23 @@ def score_program(prog):
     return score
 
 
+def _warn_widening(asset: str, reason: str) -> None:
+    """Loud, stderr-only warning — never widen silently (R-20)."""
+    print(f"WARNING: target selector asset '{asset}' {reason}", file=sys.stderr)
+
+
 def extract_scope_domains(prog):
-    """Extract in-scope domains for scanning."""
+    """Extract host-level scope domains for scanning — NON-WIDENING (R-20).
+
+    A path-scoped asset (``target.com/api/``) authorizes ONLY that path; the
+    old behavior stripped the path and authorized the whole host, silently
+    widening program scope. That widening is now refused: the asset is skipped
+    with a loud warning instead of being folded into a bare-host rule.
+
+    Wildcard assets (``*.target.com``) keep their wildcard form verbatim — the
+    wildcard means "subdomains only, not the apex", and reducing it to
+    ``target.com`` would re-authorize the apex the program excluded.
+    """
     domains = []
     for asset in prog.get("assets", []):
         if isinstance(asset, dict):
@@ -208,21 +223,43 @@ def extract_scope_domains(prog):
         else:
             identifier = str(asset)
 
-        # Clean up the identifier
         identifier = identifier.strip()
         if not identifier:
             continue
 
-        # Remove protocol prefixes
-        for prefix in ("https://", "http://", "*."):
+        original = identifier
+
+        # Strip protocol prefixes (never scope content).
+        for prefix in ("https://", "http://"):
             if identifier.startswith(prefix):
                 identifier = identifier[len(prefix):]
 
-        # Remove trailing paths
-        identifier = identifier.split("/")[0]
+        # Path-scoped asset -> refuse to widen: skip the whole asset loudly.
+        host_part, sep, path_part = identifier.partition("/")
+        if sep and path_part.strip():
+            _warn_widening(
+                original,
+                "is path-scoped; NOT widening it to the bare host — add the "
+                "bare host manually ONLY if the program actually lists it",
+            )
+            continue
+
+        # Keep wildcards verbatim (*.target.com stays *.target.com).
+        if identifier.startswith("*."):
+            if "." in identifier[2:] and identifier not in domains:
+                domains.append(identifier)
+            else:
+                _warn_widening(original, "is a wildcard over a bare TLD — refused")
+            continue
 
         if "." in identifier and identifier not in domains:
             domains.append(identifier)
+        elif "." not in identifier and identifier:
+            _warn_widening(
+                original,
+                "has no dot (not a domain) — refusing to treat it as a "
+                "host-level scope rule",
+            )
 
     return domains
 

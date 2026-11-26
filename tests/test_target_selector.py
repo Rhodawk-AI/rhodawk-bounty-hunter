@@ -207,19 +207,28 @@ class TestScoreProgram:
 
 
 class TestExtractScopeDomains:
+    # NOTE (R-20, sprint 2): extract_scope_domains is NON-WIDENING now.
+    # Path-scoped assets are skipped loudly (never folded into the bare host),
+    # and wildcard assets keep their verbatim *.host form (never reduced to
+    # the apex). The old assertions that expected "app.example.com/api" ->
+    # "app.example.com" asserted a silent scope widening and were updated.
+
     def test_dict_assets(self):
         prog = {"assets": [
             {"asset_identifier": "https://app.example.com/api"},
             {"asset_identifier": "*.example.com"},
         ]}
         domains = extract_scope_domains(prog)
-        assert "app.example.com" in domains
-        assert "example.com" in domains
+        # path-scoped asset: NOT widened to the bare host
+        assert "app.example.com" not in domains
+        assert "example.com" not in domains  # wildcard stays verbatim
+        assert domains == ["*.example.com"]
 
     def test_string_assets(self):
         prog = {"assets": ["http://test.io/path", "api.test.io"]}
         domains = extract_scope_domains(prog)
-        assert "test.io" in domains
+        # "http://test.io/path" is path-scoped -> skipped (non-widening)
+        assert "test.io" not in domains
         assert "api.test.io" in domains
 
     def test_deduplicates(self):
@@ -238,10 +247,11 @@ class TestExtractScopeDomains:
         domains = extract_scope_domains(prog)
         assert domains == []
 
-    def test_strips_wildcard_prefix(self):
+    def test_wildcard_kept_verbatim(self):
         prog = {"assets": [{"asset_identifier": "*.sub.example.com"}]}
         domains = extract_scope_domains(prog)
-        assert "sub.example.com" in domains
+        # NOT reduced to "sub.example.com" — the wildcard excludes the apex
+        assert domains == ["*.sub.example.com"]
 
 
 class TestSelectTargets:

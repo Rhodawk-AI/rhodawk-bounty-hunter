@@ -106,12 +106,33 @@ fi
 
 FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
 
+# ── Fail-closed scope manifest preflight gate (R-06 / L-28) ──────────────────
+# Mirrors recon_engine.sh: the compiled manifest (env RHODAWK_SCOPE_MANIFEST or
+# the session artifact at $RECON_DIR/scope/compiled_scope.json) is the single
+# scope authority. When one resolves, it MUST pass SHA-256 integrity validation
+# before any probe is sent — a missing or tampered manifest is a hard stop
+# (JSONL audit entry + exit 3), never a silent skip. When none resolves, the
+# upstream caller (hunt.py / the agent dispatcher) is the scope gate.
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="vuln_scanner.sh"
+if ! rhodawk_scope_gate_init "$RECON_DIR" "$TARGET"; then
+    log_err "0 probes sent. Fix or remove the unusable scope manifest, then re-run."
+    exit 3
+fi
+
 export PATH="$HOME/go/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 export PRIORITY_DIR="$RECON_DIR/priority"
 export FINDINGS_DIR
 
 CURL_TIMEOUT=60
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,lfi,ssti,graphql,cors,jwt,smuggling,cloud,manual_review,metasploit,.tmp}
+
+# Upload-canary temp file (mktemp-created inside verify_upload_poc; the trap
+# guarantees cleanup on every exit path, including INT/TERM mid-probe).
+_CANARY_TEMPLATE="rhodawk_rce_canary_XXXXXX"
+canary=""
+trap 'rm -f "$canary" 2>/dev/null' EXIT INT TERM
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 file_lines()  { [ -f "${1:-}" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
@@ -197,13 +218,16 @@ verify_upload_poc() {
     if echo "$headers" | grep -qi "jsp\|java\|tomcat"; then ext="jsp"; payload='<% out.print("RCE-VAL-" + (7*7)); %>'; fi
     if echo "$headers" | grep -qi "asp\|aspx\|\.net"; then ext="aspx"; payload='<% Response.Write("RCE-VAL-" + (7*7)) %>'; fi
     
-    local canary="proof_${ts}.${ext}"
-    echo "$payload" > "/tmp/$canary"
+    # Unpredictable canary path (L-28): a predictable /tmp/proof_<ts>.$ext lets
+    # a local attacker pre-create / symlink the file. mktemp + EXIT trap.
+    canary="$(mktemp "/tmp/${_CANARY_TEMPLATE}.${ext}" 2>/dev/null)" || {
+        log_err "  [VERIFY] mktemp failed — refusing predictable /tmp path"; return 1; }
+    printf '%s\n' "$payload" > "$canary"
     log_step "  [VERIFY] Attempting RCE-Execution PoC (${ext}): $upload_url..."
     
     for param in "file" "upload" "FileData" "userfile" "image"; do
         # Try upload
-        curl -sk -F "${param}=@/tmp/${canary}" --max-time 10 ${RHODAWK_AUTH_ARGS[@]+"${RHODAWK_AUTH_ARGS[@]}"} "$upload_url" > /dev/null || true
+        curl -sk -F "${param}=@${canary}" --max-time 10 ${RHODAWK_AUTH_ARGS[@]+"${RHODAWK_AUTH_ARGS[@]}"} "$upload_url" > /dev/null || true
 
         # Check common upload dirs
         for dir in "/" "/uploads/" "/files/" "/media/" "/temp/" "/images/" "/wp-content/uploads/"; do
@@ -212,14 +236,14 @@ verify_upload_poc() {
             if echo "$resp" | grep -q "RCE-VAL-49"; then
                 log_crit "  [POC-RCE-CONFIRMED] Code Execution Verified: $probe_url"
                 echo "[CONFIRMED] [RCE-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_rce_pocs.txt"
-                rm -f "/tmp/$canary"; return 0
+                rm -f "$canary" 2>/dev/null; unset canary; return 0
             elif echo "$resp" | grep -q "RCE-VAL-"; then
                 log_vuln "  [POC-UPLOAD-ONLY] File saved but NOT executed (Source visible): $probe_url"
                 echo "[POSSIBLE] [UPLOAD-ONLY-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_upload_pocs.txt"
             fi
         done
     done
-    rm -f "/tmp/$canary"; return 1
+    rm -f "$canary" 2>/dev/null; unset canary; return 1
 }
 
 # ── Resolve scan targets ──────────────────────────────────────────────────────
@@ -231,6 +255,22 @@ done
 # Clean and uniqify
 awk '!seen[$0]++' "$ORDERED_SCAN" > "${ORDERED_SCAN}.tmp" && mv "${ORDERED_SCAN}.tmp" "$ORDERED_SCAN"
 [ ! -s "$ORDERED_SCAN" ] && log_err "No scan targets found" && exit 1
+
+# ── Scope filter BEFORE the first probe (R-06) ───────────────────────────────
+# When a verified manifest is active, drop every out-of-scope URL from the
+# scan set (quarantined to .scope_dropped.txt) so active checking can never
+# emit traffic beyond program scope. Nothing left after filtering -> abort.
+if [ "$_SCOPE_GATE_ACTIVE" = "1" ]; then
+    log_info "Scope filter: screening ordered scan targets through the verified manifest"
+    if ! rhodawk_scope_gate_filter "$ORDERED_SCAN" "$FINDINGS_DIR/.scope_dropped.txt"; then
+        log_err "Scope filter failed — scan aborted (0 probes sent)"
+        exit 3
+    fi
+    if [ ! -s "$ORDERED_SCAN" ]; then
+        log_err "Every scan target was out of scope — nothing to scan (0 probes sent)"
+        exit 3
+    fi
+fi
 
 # ── Check 0: Upload Surface Discovery ──────────────────────────────────
 if ! skip_has upload; then

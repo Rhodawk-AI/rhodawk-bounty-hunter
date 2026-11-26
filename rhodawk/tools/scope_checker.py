@@ -597,9 +597,18 @@ def _split_patterns(values: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Deterministically check assets against bug bounty scope."
+        description="Deterministically check assets against bug bounty scope.",
+        epilog=("exit codes: 0 = in scope, 2 = out of scope, 3 = manifest "
+                "missing/tampered/unusable (fail closed)"),
     )
     parser.add_argument("asset", nargs="?", help="URL or hostname to check")
+    parser.add_argument(
+        "--check",
+        dest="asset_alias",
+        default=None,
+        help="same as the positional asset (scripting-friendly form: "
+             "--manifest <path> --check <target>)",
+    )
     parser.add_argument(
         "--manifest",
         default=None,
@@ -630,6 +639,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--vuln-class", help="Optional vulnerability class to check")
     parser.add_argument("--input-file", help="Filter URLs from a file, one per line")
+    parser.add_argument(
+        "--filter-file",
+        dest="filter_file",
+        default=None,
+        help="alias for --input-file (filter a URL list through the verified "
+             "manifest, one URL per line)",
+    )
     parser.add_argument("--output", help="Output path for filtered in-scope URLs")
     parser.add_argument("--dropped-file", help="Write the dropped out-of-scope lines "
                                                "here (used by the recon_engine.sh "
@@ -637,6 +653,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     parser.add_argument("--explain", action="store_true", help="Print the matched rule + reason")
     args = parser.parse_args(argv)
+
+    # Scripting-friendly aliases fold into the canonical options.
+    if args.asset_alias and not args.asset:
+        args.asset = args.asset_alias
+    elif args.asset_alias and args.asset:
+        parser.error("pass the target either positionally or via --check, not both")
+    if args.filter_file:
+        if args.input_file:
+            parser.error("--input-file and --filter-file are the same option; pass one")
+        args.input_file = args.filter_file
 
     domains = _split_patterns(args.domain)
     excluded_domains = _split_patterns(args.exclude_domain)

@@ -22,7 +22,8 @@ from tools.verifiers.base import (
 VULN_CLASS = "idor"
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     # The URL is the victim's object as requested BY the attacker.
     url = str(finding.get("victim_object_url") or finding_url(finding)).strip()
     attacker_headers = finding.get("attacker_headers") or finding.get("identity_a")
@@ -39,6 +40,7 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
 
     # 1) Attacker A requests the victim's object.
     ex_a, body_a = fetch(url, headers=attacker_headers, scope_checker=scope_checker,
+                         allow_localhost_testing=allow_localhost_testing,
                          note="attacker reads victim object")
     trace.append(ex_a)
     text_a = body_a.decode("utf-8", "replace")
@@ -52,7 +54,8 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
         )
 
     # 2) Control: anonymous request for the same object must be denied.
-    ex_anon, body_anon = fetch(url, scope_checker=scope_checker, note="anon control")
+    ex_anon, body_anon = fetch(url, scope_checker=scope_checker,
+                           allow_localhost_testing=allow_localhost_testing, note="anon control")
     trace.append(ex_anon)
     anon_text = body_anon.decode("utf-8", "replace")
     if ex_anon.status == 200 and str(victim_marker) in anon_text:

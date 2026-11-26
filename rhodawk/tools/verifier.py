@@ -213,7 +213,8 @@ def load_bundle(bundle_dir: str) -> dict:
 
 
 def rederive(bundle_dir: str, marker: str | None, confirm_unsafe: bool,
-             env: dict[str, str], timeout: float = 15) -> Rederivation:
+             env: dict[str, str], timeout: float = 15,
+             scope_checker=None) -> Rederivation:
     try:
         bundle = load_bundle(bundle_dir)
     except (OSError, ValueError) as e:
@@ -241,7 +242,8 @@ def rederive(bundle_dir: str, marker: str | None, confirm_unsafe: bool,
     marker_in_baseline = bool(marker) and marker in (bundle.get("original_response") or "")
 
     try:
-        fresh = poc.capture(ex.url, ex.method, headers, ex.request_body or None, timeout)
+        fresh = poc.capture(ex.url, ex.method, headers, ex.request_body or None, timeout,
+                            scope_checker=scope_checker)
     except urllib.error.URLError as e:
         return Rederivation(attempted=True, reachable=False,
                             marker_available=bool(marker), marker_in_baseline=marker_in_baseline,
@@ -267,7 +269,7 @@ def rederive(bundle_dir: str, marker: str | None, confirm_unsafe: bool,
 
 def verify(bundle_dir: str, marker_override: str | None = None,
            confirm_unsafe: bool = False, env: dict[str, str] | None = None,
-           timeout: float = 15) -> dict:
+           timeout: float = 15, scope_checker=None) -> dict:
     """Verify one bundle; return a result dict and write verification.json."""
     env = env if env is not None else dict(os.environ)
     has_bundle = os.path.isfile(os.path.join(bundle_dir, "bundle.json"))
@@ -280,7 +282,8 @@ def verify(bundle_dir: str, marker_override: str | None = None,
             has_bundle = False
 
     marker = load_marker(bundle_dir, manifest, marker_override) if has_bundle else None
-    rd = rederive(bundle_dir, marker, confirm_unsafe, env, timeout) if has_bundle \
+    rd = rederive(bundle_dir, marker, confirm_unsafe, env, timeout,
+                  scope_checker=scope_checker) if has_bundle \
         else Rederivation(attempted=False, detail="no bundle")
     v = decide(has_bundle, rd)
 
@@ -358,6 +361,9 @@ def main(argv=None) -> int:
     pc.add_argument("--require-proof", action="store_true",
                     help="exit 1 unless the verdict is reportable (for gating)")
     pc.add_argument("--timeout", type=float, default=15)
+    pc.add_argument("--manifest", default=None,
+                    help="compiled_scope.json (SHA-256 verified) — required for "
+                         "live re-derivation to send traffic (fail closed)")
     pc.add_argument("--json", dest="as_json", action="store_true")
 
     ps = sub.add_parser("sweep", help="verify every PoC bundle under a root")
@@ -366,9 +372,23 @@ def main(argv=None) -> int:
     ps.add_argument("--require-proof", action="store_true",
                     help="exit 1 if ANY bundle is not reportable")
     ps.add_argument("--timeout", type=float, default=15)
+    ps.add_argument("--manifest", default=None,
+                    help="compiled_scope.json (SHA-256 verified) — required for "
+                         "live re-derivation to send traffic (fail closed)")
     ps.add_argument("--json", dest="as_json", action="store_true")
 
     args = ap.parse_args(argv)
+
+    def _scope_checker_from_args():
+        if not getattr(args, "manifest", None):
+            return None
+        try:
+            from tools.scope_checker import ScopeChecker
+
+            return ScopeChecker.from_manifest(args.manifest)
+        except (ValueError, OSError) as exc:
+            print(f"[!] scope manifest unusable: {exc}", file=sys.stderr)
+            raise SystemExit(3)
 
     if args.cmd == "check":
         if args.marker:
@@ -378,7 +398,8 @@ def main(argv=None) -> int:
                     fh.write(args.marker)
             except OSError:
                 pass
-        rec = verify(args.bundle_dir, args.marker, args.confirm_unsafe, timeout=args.timeout)
+        rec = verify(args.bundle_dir, args.marker, args.confirm_unsafe,
+                     timeout=args.timeout, scope_checker=_scope_checker_from_args())
         print(json.dumps(rec, indent=2) if args.as_json else "", end="")
         if not args.as_json:
             _print(rec)
@@ -389,7 +410,9 @@ def main(argv=None) -> int:
         if not bundles:
             print(f"[!] no PoC bundles under {args.root}. Create one with /poc.")
             return 0
-        records = [verify(d, None, args.confirm_unsafe, timeout=args.timeout) for d in bundles]
+        _sc = _scope_checker_from_args()
+        records = [verify(d, None, args.confirm_unsafe, timeout=args.timeout,
+                          scope_checker=_sc) for d in bundles]
         if args.as_json:
             print(json.dumps(records, indent=2))
         else:

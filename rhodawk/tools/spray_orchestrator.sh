@@ -96,6 +96,25 @@ esac
 # Target host extraction
 TARGET_HOST="$(echo "$TARGET_URL" | sed -E 's|^https?://([^/:]+).*|\1|')"
 
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# A password spray is the most account-lockout-dangerous tool in the kit: the
+# same manifest contract as recon_engine.sh applies, and the target host must
+# be inside the verified manifest BEFORE the pre-flight confirmation UI.
+# shellcheck source=tools/_scope_gate.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_scope_gate.sh"
+_SCOPE_GATE_TOOL="spray_orchestrator.sh"
+if ! rhodawk_scope_gate_init "" "$TARGET_URL"; then
+    log_err "Scope gate blocked the run (exit 3) — 0 requests sent"
+    exit 3
+fi
+if ! rhodawk_scope_gate_check "$TARGET_URL"; then
+    log_err "Target is outside the verified scope manifest — 0 requests sent"
+    exit 3
+fi
+
+# umask 077 (R-18): spray audit logs contain usernames against a live target.
+umask 077
+
 # Counts
 USER_COUNT=$(grep -c . "$USERS_FILE" || true)
 PASS_COUNT=$(grep -c . "$PASSES_FILE" || true)

@@ -12,13 +12,16 @@ pure test-suite stays browser-free.
 """
 from __future__ import annotations
 
-from tools.verifiers.base import VerifyResult, confirmed, rejected, skipped, finding_url
+from tools.verifiers.base import (
+    VerifyResult, confirmed, rejected, skipped, finding_url, preflight_blocked,
+)
 from tools import dom_xss_harness
 
 VULN_CLASS = "xss"
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     url = finding_url(finding)
     if not url:
         return skipped(VULN_CLASS, "no url in finding")
@@ -26,6 +29,14 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
     params = finding.get("params") or ([finding["param"]] if finding.get("param") else [])
     timeout_ms = int(finding.get("timeout_ms") or 10000)
     shot = finding.get("screenshot")
+
+    # Scope gate BEFORE any browser launches: a headless Chromium that loads an
+    # out-of-scope (or unscoped) URL is real traffic against a real target, so
+    # the same hop-0 gate as fetch() applies here. Blocks are a skip (not a
+    # rejection): the finding simply stays an unverified lead.
+    block = preflight_blocked(url, scope_checker, allow_localhost_testing)
+    if block:
+        return skipped(VULN_CLASS, block)
 
     try:
         results = dom_xss_harness.run(url, params, timeout_ms, shot)

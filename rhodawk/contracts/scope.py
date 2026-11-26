@@ -20,6 +20,15 @@ Integrity:
     against the file content and raises ``ValueError`` on mismatch (tamper
     detection), unless ``require_valid_hash=False``.
 
+Trust model (see hooks/README.md for the consumer-facing version): the
+self-hash is tamper-EVIDENT — it detects accidental drift, truncation, and
+hand-edits — but it is not a signature. A local attacker with write access to
+the manifest file can rewrite the content and recompute ``manifest_sha256``.
+Trust is anchored in the filesystem: whoever can write the manifest can
+authorize that scope, so the data home must be permission-protected (the
+installer applies 0700/0600). The hash guarantees "this file is byte-for-byte
+what was compiled"; it cannot guarantee "who compiled it was authorized".
+
 Zero secret leakage: this contract carries scope geometry (hosts, wildcards,
 CIDRs, paths, policy rules) only — no tokens, no credentials, no auth headers.
 """

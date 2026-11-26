@@ -40,6 +40,30 @@ done
 
 [ -z "$TARGET" ] && { err "target host or -l <file> required"; exit 2; }
 
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh / vuln_scanner.sh: $RHODAWK_SCOPE_MANIFEST
+# or a resolvable compiled_scope.json must pass SHA-256 verification (a missing
+# or tampered manifest is exit 3 + JSONL audit), and the target must be inside
+# the verified manifest before any probe is sent.
+# shellcheck source=tools/_scope_gate.sh
+
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="cve_scan.sh"
+if [ -f "$TARGET" ]; then
+  # list mode (--recon <dir>/live/urls.txt): verify the session manifest and
+  # filter the list before nuclei reads it
+  _GATE_RECON_DIR="$(dirname "$(dirname "$TARGET")")"
+  if ! rhodawk_scope_gate_init "$_GATE_RECON_DIR" ""; then
+    err "scope gate blocked the run (exit 3)"; exit 3
+  fi
+  rhodawk_scope_gate_filter "$TARGET" || { err "scope filter failed — 0 probes sent"; exit 3; }
+else
+  if ! rhodawk_scope_gate_init "" "$TARGET"; then
+    err "scope gate blocked the run (exit 3)"; exit 3
+  fi
+  rhodawk_scope_gate_check "$TARGET" || { err "0 probes sent"; exit 3; }
+fi
+
 OUT_DIR="${CVE_OUT_DIR:-${RHODAWK_HOME:-$HOME/.rhodawk}/findings/cve/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUT_DIR"
 

@@ -131,7 +131,7 @@ def make_bundle(tmp_path, *, method="GET", auth=False, host="api.acme.com",
 
 
 def fake_capture(body, status=200, headers=None):
-    def _c(url, method, hdrs, reqbody, timeout):
+    def _c(url, method, hdrs, reqbody, timeout, **kwargs):
         return poc.Exchange(method=method, url=url, response_status=status,
                             response_headers=list((headers or {}).items()),
                             response_body=body, response_body_bytes=body.encode())

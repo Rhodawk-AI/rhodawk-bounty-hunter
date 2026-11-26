@@ -99,6 +99,17 @@ if [ ! -f "$RULE_FILE" ]; then
 fi
 
 # Output layout — fits existing recon/<target>/ convention
+# ── Fail-closed scope gate (R-16) ────────────────────────────────────────────
+# Same manifest contract as recon_engine.sh: a resolvable compiled_scope.json
+# must pass SHA-256 verification before generation runs for the target
+# (missing/tampered = exit 3 + JSONL audit).
+# shellcheck source=tools/_scope_gate.sh
+. "$SCRIPT_DIR/_scope_gate.sh"
+_SCOPE_GATE_TOOL="wordlist_engine.sh"
+if ! rhodawk_scope_gate_init "" "$TARGET"; then
+  echo "[-] scope gate blocked the run (exit 3)" >&2; exit 3
+fi
+
 OUT_DIR="${RHODAWK_HOME:-$HOME/.rhodawk}/recon/${TARGET}/wordlists"
 mkdir -p "$OUT_DIR"
 RAW="$OUT_DIR/from-website.txt"

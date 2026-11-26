@@ -29,7 +29,8 @@ def _median_ms(samples: list[float]) -> float:
     return median(samples) if samples else 0.0
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     url = finding_url(finding)
     param = finding.get("param")
     if not url or not param:
@@ -43,8 +44,10 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
         breaker = str(finding.get("breaker_payload") or "'")
         benign = str(finding.get("benign_value") or "1")
         ex_b, body_b = fetch(set_param(url, param, breaker), scope_checker=scope_checker,
+                             allow_localhost_testing=allow_localhost_testing,
                              note="sqli error breaker")
         ex_n, body_n = fetch(set_param(url, param, benign), scope_checker=scope_checker,
+                             allow_localhost_testing=allow_localhost_testing,
                              note="sqli benign baseline")
         trace += [ex_b, ex_n]
         in_breaker = str(sig) in body_b.decode("utf-8", "replace")
@@ -70,8 +73,10 @@ def verify(finding: dict, scope_checker=None) -> VerifyResult:
     base_ms: list[float] = []
     for _ in range(trials):
         ex_s, _ = fetch(set_param(url, param, str(sleep_payload)), scope_checker=scope_checker,
+                        allow_localhost_testing=allow_localhost_testing,
                         timeout=sleep_seconds * 3 + 10, note="sqli sleep trial")
         ex_b, _ = fetch(set_param(url, param, baseline_payload), scope_checker=scope_checker,
+                        allow_localhost_testing=allow_localhost_testing,
                         note="sqli baseline trial")
         trace += [ex_s, ex_b]
         if ex_s.status is not None:

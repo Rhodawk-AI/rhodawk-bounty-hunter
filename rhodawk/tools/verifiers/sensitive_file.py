@@ -30,13 +30,15 @@ _DEFAULT_MARKERS = [
 ]
 
 
-def verify(finding: dict, scope_checker=None) -> VerifyResult:
+def verify(finding: dict, scope_checker=None,
+           allow_localhost_testing: bool = False) -> VerifyResult:
     url = finding_url(finding)
     if not url:
         return skipped(VULN_CLASS, "no url in finding")
 
     markers = finding.get("markers") or _DEFAULT_MARKERS
-    ex, body = fetch(url, scope_checker=scope_checker, note="sensitive-file probe")
+    ex, body = fetch(url, scope_checker=scope_checker,
+                     allow_localhost_testing=allow_localhost_testing, note="sensitive-file probe")
     trace = [ex]
 
     if ex.status != 200:

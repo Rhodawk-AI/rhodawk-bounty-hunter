@@ -55,7 +55,8 @@ from urllib.parse import urlparse
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
-from tools.safe_http import safe_urlopen  # noqa: E402
+from tools.safe_http import safe_urlopen, initial_host_blocked  # noqa: E402
+from urllib.parse import urlparse as _urlparse  # noqa: E402  (hop-0 gate)
 
 USER_AGENT = "rhodawk-bounty-hunter/poc_bundler"
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational", "none"}
@@ -412,10 +413,48 @@ def parse_raw_response(text: str) -> tuple[int, str, list[tuple[str, str]], str]
 # ---------------------------------------------------------------------------
 
 
+def capture_blocked_reason(url: str, scope_checker=None,
+                           allow_localhost_testing: bool = False) -> str | None:
+    """Hop-0 gate for capture(): SSRF blocklist + scope enforcement.
+
+    Mirrors verifiers.base.preflight_blocked so the PoC bundler and the
+    verifier spine share one policy: the blocklist (loopback / RFC1918 /
+    link-local / cloud metadata) applies unconditionally, a scope_checker is
+    required (fail closed), and the only seam is allow_localhost_testing +
+    a loopback host for unit tests. Returns None when the request may proceed.
+    """
+    host = ""
+    try:
+        host = (_urlparse(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+
+    if allow_localhost_testing and host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return None  # explicit unit-test seam: loopback targets only
+    if initial_host_blocked(url):
+        return (f"blocked: initial host is loopback/private/metadata "
+                f"({host or 'unparseable URL'}) — SSRF guard (hop 0)")
+    if scope_checker is None:
+        return ("blocked: no scope_checker provided — capture fails closed "
+                "(pass a ScopeChecker, e.g. --manifest <compiled_scope.json>)")
+    if not scope_checker.is_in_scope(url):
+        return f"blocked: {url} is out of scope"
+    return None
+
+
 def capture(url: str, method: str, headers: list[tuple[str, str]],
-            body: str | None, timeout: float) -> Exchange:
+            body: str | None, timeout: float,
+            scope_checker=None,
+            allow_localhost_testing: bool = False) -> Exchange:
     """Perform the request via the repo's SSRF-guarded opener and record the
-    exact exchange."""
+    exact exchange.
+
+    safe_urlopen guards REDIRECT hops; this wrapper additionally gates hop 0 —
+    before any socket is opened the URL must pass the SSRF blocklist AND scope
+    enforcement (a blocked request raises URLError and sends 0 packets)."""
+    block = capture_blocked_reason(url, scope_checker, allow_localhost_testing)
+    if block:
+        raise urllib.error.URLError(block)
     send_headers = list(headers)
     if not any(n.lower() == "user-agent" for n, _ in send_headers):
         send_headers.append(("User-Agent", USER_AGENT))
@@ -590,6 +629,9 @@ def main(argv=None) -> int:
     pc.add_argument("--screenshot", action="store_true", help="best-effort httpx screenshot")
     pc.add_argument("--confirm-unsafe", action="store_true",
                     help="allow PUT/DELETE/PATCH (can mutate production state)")
+    pc.add_argument("--manifest", default=None,
+                    help="compiled_scope.json path (SHA-256 verified) — capture "
+                         "fails closed without a verified scope authority")
     _add_meta_args(pc)
 
     pf = sub.add_parser("from-request", help="build a bundle from a saved raw request (no network)")
@@ -618,7 +660,22 @@ def main(argv=None) -> int:
         except ValueError as e:
             print(f"[!] {e}", file=sys.stderr)
             return 2
-        ex = capture(args.url, method, headers, body, args.timeout)
+        scope_checker = None
+        if getattr(args, "manifest", None):
+            try:
+                from tools.scope_checker import ScopeChecker
+
+                scope_checker = ScopeChecker.from_manifest(args.manifest)
+            except (ValueError, OSError) as exc:
+                print(f"[!] scope manifest unusable: {exc}", file=sys.stderr)
+                return 3
+        try:
+            ex = capture(args.url, method, headers, body, args.timeout,
+                         scope_checker=scope_checker)
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            print(f"[!] capture refused: {reason}", file=sys.stderr)
+            return 2
         outdir = args.out or default_outdir(meta, ex)
         return _finish(outdir, meta, ex, args.redact, args.screenshot, args.as_json)
 

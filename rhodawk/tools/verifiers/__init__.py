@@ -95,12 +95,17 @@ def normalize_class(name: str) -> str:
     return ""
 
 
-def verify_finding(finding: dict, scope_checker=None) -> VerifyResult:
+def verify_finding(finding: dict, scope_checker=None,
+                   allow_localhost_testing: bool = False) -> VerifyResult:
     """Dispatch a finding to its deterministic verifier.
 
     `finding` carries at least a vuln_class/vuln_type plus the fields that
     verifier needs (url, param, markers, identities, oob_* ...). An unknown
     class is skipped — never silently passed.
+
+    `allow_localhost_testing` is the EXPLICIT loopback lab seam (unit tests /
+    the local benchmark): it permits loopback targets without a manifest and
+    is never set by production callers — public hosts still require scope.
     """
     raw = finding.get("vuln_class") or finding.get("vuln_type") or ""
     canon = normalize_class(raw)
@@ -112,7 +117,8 @@ def verify_finding(finding: dict, scope_checker=None) -> VerifyResult:
     enriched.setdefault("vuln_class", canon)
     if canon in ("ssrf", "xxe", "rce", "log4shell"):
         enriched["vuln_class"] = canon
-    return fn(enriched, scope_checker=scope_checker)
+    return fn(enriched, scope_checker=scope_checker,
+              allow_localhost_testing=allow_localhost_testing)
 
 
 __all__ = ["verify_finding", "REGISTRY", "normalize_class", "VerifyResult"]
