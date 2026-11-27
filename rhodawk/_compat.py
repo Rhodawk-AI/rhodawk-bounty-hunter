@@ -14,7 +14,9 @@ Two jobs, both tiny and side-effect-light:
 2. ``ensure_home_migrated()`` — one-time data-directory migration from the
    pre-2.0 ``~/.<old-name>/`` home to ``~/.rhodawk/`` (chmod 700 dir / 600
    files enforced after the move). Idempotent: no-op when the legacy
-   directory is absent or the new one already exists.
+   directory is absent or the new one already exists. The tightening pass
+   never touches symlinks (chmod would follow them) and never touches any
+   ``venv/`` subtree — the standalone-install venv must keep its +x bits.
 """
 
 from __future__ import annotations
@@ -84,6 +86,19 @@ def ensure_home_migrated() -> None:
         try:
             os.chmod(new, 0o700)
             for child in new.rglob("*"):
+                # P0 fix (v2.0.5): NEVER chmod() a symlink — os.chmod follows
+                # links, so this walk re-permissioned the TARGET of e.g.
+                # venv/bin/python3 -> /usr/bin/python3.
+                if child.is_symlink():
+                    continue
+                # P0 fix (v2.0.5): the standalone-install venv under the data
+                # home (~/.rhodawk/venv) is program data, not secrets. The old
+                # blanket 0o600 here stripped +x from venv/bin/* and the
+                # installed CLI self-destructed on its next startup
+                # (`rhodawk status` ok, then `rhodawk doctor` -> exit 126).
+                # Skip every venv subtree; wherever it appears.
+                if "venv" in child.relative_to(new).parts:
+                    continue
                 if child.is_dir():
                     os.chmod(child, 0o700)
                 elif child.is_file():

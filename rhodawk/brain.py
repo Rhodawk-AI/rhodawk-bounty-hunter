@@ -267,7 +267,12 @@ class LLMClient:
     # NVIDIA NIM accepts friendly aliases; everything normalizes to "nvidia".
     NIM_ALIASES = {"nim": "nvidia", "nvidia-nim": "nvidia", "nvidia_nim": "nvidia"}
 
-    def __init__(self, provider: str | None = None, model: str | None = None):
+    def __init__(self, provider: str | None = None, model: str | None = None,
+                 quiet: bool = False):
+        # quiet=True: suppress the "[Brain] Ollama connection failed ..." probe
+        # noise for passive inspections (rhodawk status). Interactive paths
+        # (chat / login / hunt) keep the diagnostic line.
+        self._quiet      = quiet
         self.provider    = (provider or os.environ.get("BRAIN_PROVIDER", "")).lower()
         self.provider    = self.NIM_ALIASES.get(self.provider, self.provider)
         self.model       = model or os.environ.get("BRAIN_MODEL") or None
@@ -399,11 +404,16 @@ class LLMClient:
                 self.available   = True
                 self.description = f"Ollama @ {OLLAMA_HOST}"
             except Exception as e:
-                print(
-                    f"{YELLOW}[Brain] Ollama connection failed "
-                    f"({OLLAMA_HOST}): {e}{NC}",
-                    file=sys.stderr,
-                )
+                # Passive inspections (rhodawk status) probe Ollama on a fresh
+                # machine all the time — a refused local connection there is
+                # expected, not actionable, and used to print straight above
+                # the clean "Provider: not configured" status line.
+                if not getattr(self, "_quiet", False):
+                    print(
+                        f"{YELLOW}[Brain] Ollama connection failed "
+                        f"({OLLAMA_HOST}): {e}{NC}",
+                        file=sys.stderr,
+                    )
 
         elif provider == "claude":
             key = os.environ.get("ANTHROPIC_API_KEY", "")

@@ -103,8 +103,11 @@ class TestDoctorPathHints:
         assert "python3 rhodawk/tools/credentials.py" not in out
         assert "python3 rhodawk/engine.py" not in out
         assert "python3 rhodawk/mcp/" not in out
-        # module-invocable / installed-command replacements are suggested
-        assert "python3 -m rhodawk.tools.credentials --setup" in out
+        # installed-command replacements are suggested. v2.0.5: doctor must NOT
+        # suggest the raw module form — `python3 -m rhodawk.tools.credentials
+        # --setup` fails with ModuleNotFoundError for pipx / standalone-symlink
+        # installs running outside a venv or the repo checkout.
+        assert "python3 -m rhodawk.tools.credentials --setup" not in out
         assert "rhodawk setup" in out
         # repo-only scripts are clearly labeled
         for line in out.splitlines():

@@ -7,6 +7,10 @@ AGENT="${RHODAWK_AGENT:-claude}"
 SCOPE="global"
 SETUP_BURP="ask"
 NONINTERACTIVE=0
+# The standalone path prints its final Done! banner at the very END of the
+# script — after the reconFTW setup and the capability-registry rebuild — so
+# "Done!" is never followed by more install output (v2.0.5 UX fix).
+DONE_BANNER=0
 
 # Every source path below is repo-relative, so anchor to the script's own
 # directory. Without this, running `~/tools/rhodawk-bounty-hunter/install.sh`
@@ -23,10 +27,27 @@ if [ -d "$_rhw_legacy" ] && [ ! -d "$HOME/.rhodawk" ]; then
     mv "$_rhw_legacy" "$HOME/.rhodawk" \
         || echo "[!] could not migrate pre-2.0 data home to ~/.rhodawk"
 fi
+
+# ── Permission tightening for the data home ────────────────────────────────
+# v2.0.5 P0 fix: the managed standalone venv lives under the data home and
+# MUST keep its executable bits — the old blanket `find -type f -exec chmod
+# 600` stripped +x from venv/bin/* on every (re-)run and the installed CLI
+# self-destructed on its next startup (exit 126). The venv subtree is pruned
+# from BOTH passes; sensitive config/data files (config.json, .env,
+# oauth.json, vault files, recon/findings) are still tightened. Symlinks are
+# never matched (-type d / -type f exclude them without -L), so chmod cannot
+# follow a link to its target. If RHODAWK_HOME points somewhere else, that
+# home is not walked here at all, so its venv was never at risk.
+tighten_rhodawk_home_perms() {
+    local rh_home="$1"
+    chmod 700 "$rh_home" 2>/dev/null || true
+    find "$rh_home" -path "$rh_home/venv" -prune -o \
+        -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
+    find "$rh_home" -path "$rh_home/venv" -prune -o \
+        -type f -exec chmod 600 {} + 2>/dev/null || true
+}
 if [ -d "$HOME/.rhodawk" ]; then
-    chmod 700 "$HOME/.rhodawk" 2>/dev/null || true
-    find "$HOME/.rhodawk" -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
-    find "$HOME/.rhodawk" -type f -exec chmod 600 {} + 2>/dev/null || true
+    tighten_rhodawk_home_perms "$HOME/.rhodawk"
 fi
 
 
@@ -58,7 +79,8 @@ Defaults:
   ./install.sh                    Install for Claude Code globally
 
 Standalone (no subscription needed):
-  ./install.sh --agent standalone Install or update the 'rhodawk' system command
+  ./install.sh --agent standalone Install or update the 'rhodawk' + 'rhodawk-agent'
+                                  system commands (isolated venv, PEP 668-safe)
   ./install.sh --agent mcp        Print MCP client config + install mcp Python SDK hint
                                   After install, type from anywhere:
                                     rhodawk help
@@ -398,7 +420,42 @@ install_standalone() {
     # Make engine.py executable
     chmod +x "$engine"
 
-    # ── Install rhodawk system command ──────────────────────────────────────
+    # ── Dedicated isolated venv (PEP 668-safe) ────────────────────────────────
+    # Ubuntu 24.04+ (PEP 668) rejects pip installs into the system Python, so
+    # the old bare `pip3 install requests ollama` failed silently on every
+    # fresh box: rhodawk stayed a raw engine.py symlink with no mcp/requests
+    # and rhodawk-agent was never installed at all. Preferred path: a
+    # dedicated venv under the data home with the repo installed editable, so
+    # rhodawk, rhodawk-agent, requests and the mcp SDK all resolve from ANY
+    # working directory (also fixes `python3 -m rhodawk.tools.credentials`
+    # not being importable outside the repo checkout).
+    local venv_dir venv_ok=0
+    venv_dir="${RHODAWK_HOME:-$HOME/.rhodawk}/venv"
+    if [ "${RHODAWK_SKIP_DEPS:-0}" = "1" ]; then
+        echo "[i] RHODAWK_SKIP_DEPS=1 — skipping venv + pip setup (raw engine symlink mode)"
+    elif command -v python3 >/dev/null 2>&1; then
+        if [ ! -x "$venv_dir/bin/python" ]; then
+            echo "[*] Creating isolated venv at $venv_dir (PEP 668-safe) ..."
+            python3 -m venv "$venv_dir" \
+                || echo "[!] python3 -m venv failed (python3-venv package missing?) — falling back to raw engine symlink"
+        else
+            echo "[+] Reusing existing venv at $venv_dir"
+        fi
+        if [ -x "$venv_dir/bin/pip" ]; then
+            echo "[*] Installing rhodawk + rhodawk-agent (editable) into the venv ..."
+            if "$venv_dir/bin/pip" install --quiet -e "$repo_dir"; then
+                venv_ok=1
+                # Marker so uninstall.sh only ever removes a venv we created.
+                touch "$venv_dir/.rhodawk-managed-venv"
+                echo "[+] rhodawk + rhodawk-agent installed (editable); requests + mcp live inside the venv"
+                echo "[+] System Python untouched (PEP 668-safe)"
+            else
+                echo "[!] pip install -e . failed (offline / no wheels?) — falling back to raw engine symlink"
+            fi
+        fi
+    fi
+
+    # ── Install rhodawk + rhodawk-agent system commands ──────────────────────
     # Prefer updating the currently active managed installation. This prevents
     # an old /usr/local/bin entry from shadowing a new ~/.local/bin symlink.
     existing_cmd="$(command -v rhodawk 2>/dev/null || true)"
@@ -406,6 +463,8 @@ install_standalone() {
         bin_dir="$RHODAWK_BIN_DIR"
     elif [ -n "$existing_cmd" ] && [[ -e "$existing_cmd" || -L "$existing_cmd" ]]; then
         if [ -L "$existing_cmd" ] && [ "$(basename "$(readlink "$existing_cmd")")" = "engine.py" ]; then
+            bin_dir="$(dirname "$existing_cmd")"
+        elif [ -L "$existing_cmd" ] && [[ "$(readlink "$existing_cmd")" == "$venv_dir/"* ]]; then
             bin_dir="$(dirname "$existing_cmd")"
         elif [ -f "$existing_cmd" ] && grep -q "Standalone RhodawkAI Bounty Hunter CLI" "$existing_cmd" 2>/dev/null; then
             bin_dir="$(dirname "$existing_cmd")"
@@ -420,10 +479,24 @@ install_standalone() {
         bin_dir="$HOME/.local/bin"
     fi
 
-    target="$bin_dir/rhodawk"
-    action="Installed"
-    if [ -e "$target" ] || [ -L "$target" ]; then
-        action="Updated"
+    # Resolve the symlink sources: the venv console scripts when the venv
+    # install succeeded, raw repo files otherwise — and say so loudly instead
+    # of pretending everything succeeded (v2.0.5: rhodawk-agent used to be
+    # silently missing in every mode).
+    local src_rhodawk src_agent
+    if [ "$venv_ok" = "1" ] \
+        && [ -x "$venv_dir/bin/rhodawk" ] && [ -x "$venv_dir/bin/rhodawk-agent" ]; then
+        src_rhodawk="$venv_dir/bin/rhodawk"
+        src_agent="$venv_dir/bin/rhodawk-agent"
+    else
+        venv_ok=0
+        src_rhodawk="$engine"
+        # agent.py carries its own shebang + __main__ guard, so a direct
+        # symlink works as the rhodawk-agent launcher even without the venv.
+        src_agent="$repo_dir/rhodawk/agent.py"
+        chmod +x "$src_agent"
+        echo "[!] Fallback mode: the mcp SDK + cloud deps need the venv — run:"
+        echo "    python3 -m venv \"$venv_dir\" && \"$venv_dir/bin/pip\" install -e \"$repo_dir\""
     fi
 
     install_cmd=()
@@ -438,23 +511,37 @@ install_standalone() {
     # bash 3.2 (macOS default) aborts under set -u when expanding an empty array
     # as "${install_cmd[@]}" — same idiom as tools/_auth_helper.sh.
     ${install_cmd[@]+"${install_cmd[@]}"} mkdir -p "$bin_dir"
-    ${install_cmd[@]+"${install_cmd[@]}"} ln -sfn "$engine" "$target"
 
-    if [ -L "$target" ] && [ "$(readlink "$target")" = "$engine" ]; then
-        echo "[+] $action: $target -> $engine"
-        # Step 1A: the same engine is also exposed as `rhodawk` (brand alias).
-        ${install_cmd[@]+"${install_cmd[@]}"} ln -sfn "$engine" "$bin_dir/rhodawk"
-        if [ -L "$bin_dir/rhodawk" ] || [ -e "$bin_dir/rhodawk" ]; then
-            echo "[+] $action: $bin_dir/rhodawk -> $engine"
-        else
-            echo "[!] Could not install $bin_dir/rhodawk (rhodawk still works)" >&2
-        fi
+    # Each entrypoint is linked and logged exactly once (the old script linked
+    # rhodawk twice — engine symlink plus a duplicate alias link — and printed
+    # the same "[+] Installed: .../rhodawk -> .../engine.py" line two times).
+    target="$bin_dir/rhodawk"
+    action="Installed"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        action="Updated"
+    fi
+    ${install_cmd[@]+"${install_cmd[@]}"} ln -sfn "$src_rhodawk" "$target"
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$src_rhodawk" ]; then
+        echo "[+] $action: $target -> $src_rhodawk"
     else
         echo "[!] Could not install or update $target" >&2
         echo "    Try: sudo ./install.sh --agent standalone" >&2
         echo "    Or add this to ~/.bashrc / ~/.zshrc:"
         echo "    alias rhodawk='python3 $engine'"
         return 1
+    fi
+
+    target="$bin_dir/rhodawk-agent"
+    action="Installed"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        action="Updated"
+    fi
+    ${install_cmd[@]+"${install_cmd[@]}"} ln -sfn "$src_agent" "$target"
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$src_agent" ]; then
+        echo "[+] $action: $target -> $src_agent"
+    else
+        echo "[!] Could not install or update $target (rhodawk still works)" >&2
+        echo "    Try: sudo ./install.sh --agent standalone" >&2
     fi
 
     # ── Check PATH ────────────────────────────────────────────────────────────
@@ -479,26 +566,18 @@ install_standalone() {
     fi
 
     # ── Optional Python deps ──────────────────────────────────────────────────
-    # Ollama setup/chat has a standard-library HTTP fallback, so a distro that
-    # blocks global pip installs still gets a working local provider.
-    if [ "${RHODAWK_SKIP_DEPS:-0}" != "1" ] && command -v pip3 &>/dev/null; then
-        echo "Installing optional Python deps (cloud providers and agent mode)..."
+    if [ "$venv_ok" = "1" ]; then
+        echo "[+] Python deps (requests, mcp) installed inside the venv — nothing was touched in the system Python (PEP 668-safe)"
+    elif [ "${RHODAWK_SKIP_DEPS:-0}" != "1" ] && command -v pip3 &>/dev/null; then
+        echo "Installing optional Python deps (best effort)..."
         if ! pip3 install --quiet requests ollama 2>/dev/null; then
-            echo "[!] Optional pip packages were not installed; standalone Ollama chat still works via HTTP."
+            echo "[!] Optional pip packages were not installed (PEP 668 / externally-managed environment)."
+            echo "    Standalone Ollama chat still works via the stdlib HTTP fallback, but for full"
+            echo "    MCP + agent support create the venv manually:"
+            echo "      python3 -m venv \"$venv_dir\""
+            echo "      \"$venv_dir/bin/pip\" install -e \"$repo_dir\""
         fi
     fi
-
-    echo ""
-    echo "════════════════════════════════════════════════════"
-    echo "  Done! Type from anywhere:"
-    echo ""
-    echo "    rhodawk setup"
-    echo "    rhodawk models"
-    echo "    rhodawk recon target.com"
-    echo "    rhodawk hunt  target.com"
-    echo "    rhodawk validate \"<finding>\""
-    echo "    rhodawk chat"
-    echo "════════════════════════════════════════════════════"
     echo ""
 }
 
@@ -534,6 +613,7 @@ install_mcp() {
 case "$AGENT" in
     standalone|engine)
         SETUP_BURP="no"
+        DONE_BANNER=1
         install_standalone
         ;;
     mcp)
@@ -643,12 +723,13 @@ os.chmod(str(cfg_path), 0o600)
 print(f"[+] rtw_home persisted to {cfg_path}")
 PY
     fi
-    # Build the single source of truth every runtime reads.
+    # Build the single source of truth every runtime reads. --summary keeps
+    # the install log to one human-readable line — the old rebuild call
+    # dumped a raw 9-line JSON state dict into stdout on non-TTY installs.
     if command -v python3 >/dev/null 2>&1; then
-        python3 "$(cd "$(dirname "$0")" && pwd)/rhodawk/tools/capability_registry.py" --rebuild --banner \
+        python3 "$(cd "$(dirname "$0")" && pwd)/rhodawk/tools/capability_registry.py" --rebuild --summary \
             || echo "[!] capability_registry --rebuild failed — run it manually before hunting"
     fi
-    echo "[i] Install the gap-fill backing binaries with: bash install_tools.sh --rtw-deps"
 }
 install_rtw_capability_delegation
 
@@ -670,5 +751,24 @@ if [ "$NONINTERACTIVE" != "1" ] && [ -t 0 ] && command -v python3 >/dev/null 2>&
     echo "  skipped keys are stored blank for later editing."
     echo ""
     python3 "$SCRIPT_DIR/rhodawk/tools/credentials.py" --setup \
-        || echo "[!] credential bootstrap failed — run manually: python3 rhodawk/tools/credentials.py --setup"
+        || echo "[!] credential bootstrap failed — run later: rhodawk setup"
+fi
+
+# ── Final standalone summary — always the LAST block printed ─────────────────
+# v2.0.5 UX fix: the old banner was printed from inside install_standalone
+# BEFORE the reconFTW clone/pin and the capability-registry rebuild ran, so
+# "Done!" was followed by a page of clone output and a raw JSON dump. All of
+# that now happens first; this banner is genuinely last.
+if [ "${DONE_BANNER:-0}" = "1" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo "  Done! Type from anywhere:"
+    echo ""
+    echo "    rhodawk doctor"
+    echo "    rhodawk setup"
+    echo "    rhodawk scope-compile <handle>"
+    echo "    rhodawk recon <target>"
+    echo "    rhodawk-agent --help"
+    echo "════════════════════════════════════════════════════"
+    echo ""
 fi

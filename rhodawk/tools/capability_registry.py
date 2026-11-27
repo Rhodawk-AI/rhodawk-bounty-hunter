@@ -550,6 +550,21 @@ def print_banner(state: Optional[dict] = None) -> None:
     print("=" * 72)
 
 
+def print_summary(state: Optional[dict] = None) -> None:
+    """One-line human readiness summary for installers.
+
+    install.sh used to dump the raw state dict (or the full banner table)
+    into the install log after the Done! message; this replaces that with a
+    single actionable line that still points at the gap-fill installer."""
+    if state is None:
+        state = load_state()
+    total = len(CAPABILITIES)
+    ready = sum(1 for st in state.values()
+                if st in (STATE_NATIVE, STATE_RTW_AVAILABLE))
+    print(f"[i] reconFTW gap-fill capabilities: {ready}/{total} ready "
+          f"(run 'bash install_tools.sh --rtw-deps' to install missing backing binaries)")
+
+
 # ── Per-capability install (step 3) ───────────────────────────────────────────
 
 def install_capability(cap_id: str) -> int:
@@ -626,6 +641,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="recompute availability and persist capabilities.json")
     parser.add_argument("--banner", action="store_true",
                         help="print the setup banner (keys + capability table)")
+    parser.add_argument("--summary", action="store_true",
+                        help="print a one-line readiness summary (installer UX)")
     parser.add_argument("--json", action="store_true",
                         help="machine-readable state to stdout")
     parser.add_argument("--install-capability", metavar="CAP_ID",
@@ -642,10 +659,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return install_all_rtw()
     if args.rebuild:
         mapping = rebuild(write=True)
-        if args.json or not sys.stdout.isatty():
+        if args.summary:
+            print_summary(mapping)
+        elif args.json or not sys.stdout.isatty():
             print(json.dumps(mapping, indent=2, sort_keys=True))
         else:
             print_banner(mapping)
+        return 0
+    if args.summary:
+        # Same live-evaluate guarantee as the --banner path (Step 1D): never
+        # answer from the stale cached capabilities.json.
+        print_summary({cap_id: evaluate_capability(cap_id)["state"]
+                       for cap_id in CAPABILITIES})
         return 0
     state = load_state()
     if args.check:

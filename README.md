@@ -116,8 +116,24 @@ cd rhodawk-bounty-hunter
 ./install.sh --agent standalone
 ```
 
+**Complete install matrix — every supported path:**
+
+| Install path | Command | What you get |
+| --- | --- | --- |
+| PyPI CLI (recommended) | `pipx install rhodawk-bounty-hunter` or `uv tool install rhodawk-bounty-hunter` | `rhodawk` + `rhodawk-agent` on PATH |
+| npm thin wrapper | `npm install -g @rhodawkai/bounty-hunter` | wrapper chaining to the PyPI package |
+| Repo standalone install | `./install.sh --agent standalone` | PEP 668-safe venv at `~/.rhodawk/venv` (editable install) + `rhodawk` / `rhodawk-agent` symlinks in `/usr/local/bin` (or `~/.local/bin`) |
+| Claude Code / coding-agent plugin + PreToolUse hook | `./install.sh --agent claude` (`--project` for repo-local) | skills, commands, agents + the hash-verified scope-guard hook in `settings.json` |
+| MCP client setup | `./install.sh --agent mcp` | MCP client config for Claude Code / OpenCode + `mcp` SDK install hint |
+| Every supported target | `./install.sh --agent all` | all of the plugin targets + MCP |
+| External binary arsenal | `./install_tools.sh` | subfinder, httpx, nuclei, katana, ffuf, nmap, … |
+| reconFTW gap-fill backing binaries | `./install_tools.sh --rtw-deps` | the 7 delegated reconFTW capabilities (ASN enum, …) |
+| Managed headless browser | `./install_tools.sh --browser` | managed Chromium for SPA crawling |
+
 **External security binaries are installed separately** via `./install_tools.sh`
-(subfinder, httpx, nuclei, katana, ffuf, nmap, …) — the Python package alone
+(subfinder, httpx, nuclei, katana, ffuf, nmap, …), with optional flags
+`--rtw-deps` (reconFTW gap-fill backing binaries) and `--browser` (managed
+Chromium) — the Python package alone
 only runs the gated pipeline shells that call them. **There is no official
 Docker image yet**: for isolation, bring your own container/VM and mount a
 volume at `RHODAWK_HOME` — everything the tool writes (recon, findings,

@@ -232,8 +232,13 @@ def _configured_model(cfg: dict, provider: str | None) -> str | None:
     return None
 
 
-def _get_client(provider: str | None = None):
-    """Return an LLMClient, applying saved config if no env override."""
+def _get_client(provider: str | None = None, quiet: bool = False):
+    """Return an LLMClient, applying saved config if no env override.
+
+    quiet=True suppresses provider-probe noise (e.g. "[Brain] Ollama
+    connection failed ...") for passive inspections like `rhodawk status`,
+    where a refused local Ollama probe on a fresh machine is expected, not
+    an actionable error."""
     _, LLMClient = _import_brain()
     cfg = load_config()
     provider = provider or os.environ.get("BRAIN_PROVIDER") or cfg.get("provider")
@@ -242,7 +247,7 @@ def _get_client(provider: str | None = None):
     model = _configured_model(cfg, provider)
     if model:
         os.environ["BRAIN_MODEL"] = model
-    return LLMClient(provider, model=model)
+    return LLMClient(provider, model=model, quiet=quiet)
 
 
 def _get_brain(provider: str | None = None):
@@ -320,7 +325,7 @@ def cmd_setup(args):
             print()
         else:
             info("Skipping interactive credential bootstrap (no TTY) — run later:")
-            info("  python3 -m rhodawk.tools.credentials --setup")
+            info("  rhodawk setup")
 
     providers = {
         "1":  ("ollama",     "Ollama     (local, FREE)       — needs ollama running locally"),
@@ -1014,7 +1019,10 @@ def cmd_status(args):
         print(f"    {GREEN}•{NC} {t.name}: {len(list(t.glob('*.md')))} report(s)")
 
     print(f"\n  {BOLD}Provider:{NC} ", end="")
-    client = _get_client()
+    # quiet=True: status is a passive inspection — a refused local Ollama
+    # probe must not spew "[Brain] Ollama connection failed ..." noise above
+    # the clean "Provider: not configured" line on fresh machines.
+    client = _get_client(quiet=True)
     if client.available:
         model = _configured_model(load_config(), client.provider)
         model_note = f" | model: {model}" if model else " | model: automatic"
@@ -1040,6 +1048,30 @@ def _doctor_chromium_path() -> str:
         return value if isinstance(value, str) else ""
     except (OSError, ValueError, AttributeError):
         return ""
+
+
+def _doctor_mcp_check() -> tuple:
+    """MCP readiness for `rhodawk doctor`: cli.py import AND mcp SDK presence.
+
+    Importing mcp/rhodawk-mcp/cli.py alone is not enough — it imports cleanly
+    even when the `mcp` SDK is absent (it imports the SDK lazily), so doctor
+    used to print [PASS] while `rhodawk mcp doctor` exited 1 with
+    "No module named 'mcp.server'". Returns (status, detail, fix) for the
+    "MCP module" row."""
+    mcp_cli = HERE / "mcp" / "rhodawk-mcp" / "cli.py"
+    try:
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location("abh_mcp_cli_doctor", mcp_cli)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        return ("FAIL", f"import failed: {exc}", "rhodawk mcp doctor")
+    try:
+        import mcp.server  # noqa: F401, PLC0415
+    except ImportError:
+        return ("WARN", "cli.py ok, but 'mcp' SDK missing — MCP server disabled",
+                "pip install 'mcp>=2.2.0'   # or: rhodawk mcp doctor")
+    return ("PASS", "cli.py imports cleanly, mcp SDK available", "")
 
 
 def cmd_doctor(args):
@@ -1143,7 +1175,11 @@ def cmd_doctor(args):
         for _label, _status, _detail in (_cred_rows or []):
             record("PASS" if _status in ("READY", "KEYLESS") else "WARN",
                    _label, f"{_status}: {_detail}",
-                   "python3 -m rhodawk.tools.credentials --setup"
+                   # Portable installed-command hint: the raw module form
+                   # (python3 -m rhodawk.tools.credentials --setup) fails with
+                   # ModuleNotFoundError for pipx / standalone-symlink installs
+                   # running outside the repo checkout or a venv.
+                   "rhodawk setup"
                    if _status not in ("READY", "KEYLESS") else "")
 
     cfg = load_config()
@@ -1180,17 +1216,10 @@ def cmd_doctor(args):
                            "no READY within 4s (unreachable or slow)",
                            "rhodawk setup")
 
-    # 5. MCP module import (rhodawk mcp doctor parity)
-    mcp_cli = HERE / "mcp" / "rhodawk-mcp" / "cli.py"
-    try:
-        import importlib.util  # noqa: PLC0415
-        spec = importlib.util.spec_from_file_location("abh_mcp_cli_doctor", mcp_cli)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        record("PASS", "MCP module", "cli.py imports cleanly")
-    except Exception as exc:
-        record("FAIL", "MCP module", f"import failed: {exc}",
-               "rhodawk mcp doctor")
+    # 5. MCP module import (rhodawk mcp doctor parity) — checks BOTH the
+    #    bundled cli.py import AND that the mcp SDK itself is importable.
+    _mcp_status, _mcp_detail, _mcp_fix = _doctor_mcp_check()
+    record(_mcp_status, "MCP module", _mcp_detail, _mcp_fix)
 
     header("Environment doctor (rhodawk doctor)")
     for status, label, detail, fix in results:
