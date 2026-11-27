@@ -54,12 +54,13 @@ log_vuln()  { echo -e "    ${RED}[VULN]${NC} $1"; }
 # behavior (<target> [--quick]) is preserved.
 TARGET=""
 QUICK_MODE=""
+JS_CRAWL=0
 SCOPE_DOMAIN_ARGS=()
 SCOPE_EXCLUDE_ARGS=()
 SCOPE_MANIFEST_ARG=""
 SCOPE_OPT_OUT=0
 _rtw_engine_usage() {
-    echo "Usage: $0 <target> [--quick]"
+    echo "Usage: $0 <target> [--quick] [--js-crawl]"
     echo "                     [--scope-domain PATTERN]... [--scope-exclude PATTERN]..."
     echo "                     [--scope-manifest PATH] [--no-scope-check]"
     echo "  target = FQDN, IP, CIDR, or path to a file of domains/hosts"
@@ -70,11 +71,17 @@ _rtw_engine_usage() {
     echo "  --scope-domain / --scope-exclude are forwarded to the reconFTW"
     echo "  gap-fill adapter (Phases 1.5/5.5). Without any scope source (or"
     echo "  without --no-scope-check) the engine fails closed."
+    echo "  --js-crawl              opt-in headless JS crawl (Phase 5.75, Playwright):"
+    echo "                          capture runtime XHR/fetch endpoints of SPA targets."
+    echo "                          Skips with a WARN when Playwright/Chromium is"
+    echo "                          unavailable; requires a scope authority."
 }
 while [ $# -gt 0 ]; do
     case "$1" in
         --quick)
             QUICK_MODE="--quick"; shift ;;
+        --js-crawl)
+            JS_CRAWL=1; shift ;;
         --normalize-only)
             # Hidden upstream mode (tests/test_target_normalize.py): print the
             # normalized target and exit; see the QUICK_MODE check below.
@@ -1283,6 +1290,85 @@ if _rtw_ready; then
     fi
 else
     log_step "reconFTW gap-fill not configured (RTW_HOME unset) — skipping (upstream behavior)"
+fi
+
+# ============================================================
+# Phase 5.75: Headless JS Crawl (OPT-IN — requires --js-crawl)
+# Loads live hosts in a real headless Chromium (Playwright) and captures the
+# XHR/fetch endpoints an SPA only exposes at runtime (see CRAWLER-REDESIGN.md).
+# Scope contract is identical to every other phase: seeds are pre-checked
+# against the resolved scope authority, the captured URL file passes through
+# the SAME B3 scope filter below, and missing Playwright/Chromium degrades to
+# a WARN + skip (never a hard failure). Opt-out runs skip the phase entirely.
+# ============================================================
+if [ "$JS_CRAWL" = "1" ]; then
+    if [ "$SCOPE_OPT_OUT" = "1" ]; then
+        log_step "Headless JS crawl skipped (--no-scope-check: browsing without a scope authority is refused)"
+    else
+        echo ""
+        log_info "Phase 5.75: Headless JS Crawl"
+        _js_crawl_scope_args=()
+        if [ -n "${SCOPE_MANIFEST:-}" ]; then
+            _js_crawl_scope_args=(--manifest "$SCOPE_MANIFEST")
+        elif [ ${#SC_CHECK_ARGS[@]} -gt 0 ]; then
+            _js_crawl_scope_args=(${SC_CHECK_ARGS[@]+"${SC_CHECK_ARGS[@]}"})
+        else
+            case "$(printf '%s' "${TARGET_TYPE:-}" | tr -d '[:space:]')" in
+                ip|local|cidr) _js_crawl_scope_args=(--domain "$TARGET") ;;
+                *)
+                    log_err "SCOPE BLOCK: --js-crawl requires a scope authority (manifest or --scope-domain patterns)"
+                    _rhodawk_audit_scope_block "js-crawl invoked without any scope authority (fail-closed)"
+                    exit 3 ;;
+            esac
+        fi
+        # Seeds: live hosts first (top 10), same-origin discovered URLs second.
+        mkdir -p "$RECON_DIR/js_crawl"
+        _js_seeds="$RECON_DIR/js_crawl/.seeds.txt"
+        grep -E '^https?://' "$RECON_DIR/live/urls.txt" 2>/dev/null | head -10 > "$_js_seeds" || true
+        grep -E '^https?://' "$RECON_DIR/urls/all.txt" 2>/dev/null | head -10 >> "$_js_seeds" || true
+        sort -u -o "$_js_seeds" "$_js_seeds" 2>/dev/null || true
+        if [ ! -s "$_js_seeds" ]; then
+            # httpx absent or zero live hosts — the normalized target is still
+            # a valid seed (this is exactly the SPA-demo case: one host, no
+            # probing tooling). Build the seed from TARGET/TARGET_PORT.
+            case "$TARGET_TYPE" in
+                ip|local|cidr) _js_seed="http://$TARGET" ;;
+                *) _js_seed="https://$TARGET" ;;
+            esac
+            if [ -n "$TARGET_PORT" ]; then
+                case "$TARGET_PORT" in
+                    443) _js_seed="https://$TARGET:$TARGET_PORT" ;;
+                    *)   _js_seed="http://$TARGET:$TARGET_PORT" ;;
+                esac
+            fi
+            printf '%s\n' "$_js_seed" > "$_js_seeds"
+            log_step "No live URLs yet — seeding the crawl with the target itself ($_js_seed)"
+        fi
+        if [ -s "$_js_seeds" ]; then
+            if python3 "$BASE_DIR/tools/js_crawl.py" \
+                    $(sed 's/^/--url /' "$_js_seeds" | tr '\n' ' ') \
+                    --recon-dir "$RECON_DIR" \
+                    ${_js_crawl_scope_args[@]+"${_js_crawl_scope_args[@]}"} \
+                    --max-pages 10 --timeout 180; then
+                if [ -s "$RECON_DIR/js_crawl/endpoints.txt" ]; then
+                    # Same B3 contract as every other URL source: the crawled
+                    # corpus is scope-filtered BEFORE it touches urls/all.txt.
+                    _rhodawk_scope_filter "$RECON_DIR/js_crawl/endpoints.txt"
+                    mkdir -p "$RECON_DIR/urls"
+                    cat "$RECON_DIR/js_crawl/endpoints.txt" >> "$RECON_DIR/urls/all.txt"
+                    sort -u -o "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/all.txt"
+                    log_done "Headless JS crawl: $(wc -l < "$RECON_DIR/js_crawl/endpoints.txt" 2>/dev/null || echo 0) endpoint(s) merged into urls/all.txt"
+                else
+                    log_step "Headless JS crawl: no endpoints captured (see js_crawl/summary.json)"
+                fi
+            else
+                log_warn "Headless JS crawl failed — continuing (see js_crawl/summary.json)"
+            fi
+        else
+            log_step "Headless JS crawl: no seed URLs — skipping"
+        fi
+        rm -f "$_js_seeds"
+    fi
 fi
 
 # B3 filter point 4/4: after the Phase 5.5 merge (before Phase 6 fuzzing and

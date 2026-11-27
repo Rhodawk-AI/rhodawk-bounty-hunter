@@ -86,9 +86,11 @@ __all__ = [
     "ProgramNotFoundError",
     "RestAuthError",
     "normalize_handle",
+    "detect_platform",
     "parse_policy_markdown",
     "fetch_program_scope",
     "fetch_bounty_targets_program",
+    "fetch_bounty_targets_entry",
     "parse_h1scope_csv",
     "parse_huntdeck_db",
     "parse_bbscope_cache",
@@ -103,6 +105,27 @@ H1_API_BASE = "https://api.hackerone.com/v1"
 H1_GRAPHQL_URL = "https://hackerone.com/graphql"
 BOUNTY_TARGETS_URL = ("https://raw.githubusercontent.com/arkadiyt/"
                       "bounty-targets-data/main/data/hackerone_data.json")
+# Mission fix 7: Bugcrowd / Intigriti / YesWeHack scope compilation via the
+# SAME keyless bounty-targets-data dump (one file per platform). This closes
+# the "HackerOne-only scope compilation" limitation flagged in the README —
+# keyless, no private-API guessing, same CompiledScopeManifest output.
+BOUNTY_TARGETS_BASE = ("https://raw.githubusercontent.com/arkadiyt/"
+                       "bounty-targets-data/main/data")
+PLATFORM_DATA_FILES = {
+    "hackerone": "hackerone_data.json",
+    "bugcrowd": "bugcrowd_data.json",
+    "intigriti": "intigriti_data.json",
+    "yeswehack": "yeswehack_data.json",
+}
+# URL hosts that imply a platform (used by detect_platform).
+_PLATFORM_URL_HOSTS = {
+    "bugcrowd.com": "bugcrowd",
+    "www.bugcrowd.com": "bugcrowd",
+    "app.intigriti.com": "intigriti",
+    "intigriti.com": "intigriti",
+    "yeswehack.com": "yeswehack",
+    "app.yeswehack.com": "yeswehack",
+}
 SCOPE_PAGE_SIZE = 100
 MAX_PAGES = 100
 DEFAULT_TIMEOUT = 20
@@ -134,12 +157,35 @@ class RestAuthError(ScopeCompilerError):
 _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def detect_platform(handle_or_url: str) -> str:
+    """Infer the bug-bounty platform from a handle or program URL.
+
+    "https://hackerone.com/x" → hackerone (the historical default);
+    "https://bugcrowd.com/engagements/slug" → bugcrowd;
+    "https://app.intigriti.com/researcher/program/c/p" → intigriti;
+    "https://yeswehack.com/programs/id" → yeswehack;
+    bare handles → hackerone (unchanged default; bare handles are compiled
+    against the platform the caller means — pass a URL to disambiguate).
+    """
+    raw = str(handle_or_url or "").strip()
+    if "://" in raw:
+        host = (urllib.parse.urlsplit(raw).netloc or "").lower()
+        return _PLATFORM_URL_HOSTS.get(host, "hackerone")
+    return "hackerone"
+
+
 def normalize_handle(handle_or_url: str) -> str:
     """Extract the exact lowercase program handle from a handle or URL.
 
     "CloudFlare", "cloudflare", and
     "https://hackerone.com/cloudflare?type=team" all yield "cloudflare".
-    Raises ValueError on anything that is not a safe single path component.
+    Platform URLs are supported too:
+      https://bugcrowd.com/engagements/<slug>              → <slug>
+      https://app.intigriti.com/researcher/program/c/p/... → last segment
+      https://yeswehack.com/programs/<id>                  → <id>
+    (For Intigriti the dump's `handle` field is the reliable key — a URL slug
+    may differ; pass the bare handle when in doubt.) Raises ValueError on
+    anything that is not a safe single path component.
     """
     raw = str(handle_or_url or "").strip()
     if not raw:
@@ -153,6 +199,12 @@ def normalize_handle(handle_or_url: str) -> str:
         if candidate in ("hackerone.com", "www.hackerone.com"):
             path = (parsed.path or "").strip("/")
             candidate = path.split("/", 1)[0] if path else ""
+        elif candidate in _PLATFORM_URL_HOSTS:
+            # bugcrowd /<slug>, intigriti /researcher/program/<c>/<p>,
+            # yeswehack /programs/<id> — the LAST path segment is the
+            # program-identifying slug on all three platforms.
+            path = (parsed.path or "").strip("/")
+            candidate = path.rsplit("/", 1)[-1] if path else ""
         if not candidate:
             raise ValueError(f"cannot extract a program handle from {raw!r}")
     else:
@@ -468,6 +520,102 @@ def fetch_bounty_targets_program(handle: str,
         f"(exact handle match)")
 
 
+def fetch_bounty_targets_entry(handle: str, platform: str = "hackerone",
+                               fetch_fn=None) -> dict:
+    """Exact case-insensitive per-platform lookup in the bounty-targets-data
+    dump (mission fix 7). Handle keys per platform:
+      hackerone → entry["handle"]; bugcrowd → url slug or exact name;
+      intigriti → entry["handle"] or entry["id"]; yeswehack → entry["id"].
+    Substring matches ("shop" vs "shopify") are the bug this replaces, never
+    a feature.
+    """
+    if fetch_fn is None:
+        fetch_fn = _rest_request
+    filename = PLATFORM_DATA_FILES.get(platform)
+    if not filename:
+        raise ValueError(f"unsupported platform {platform!r}")
+    data = fetch_fn(f"{BOUNTY_TARGETS_BASE}/{filename}")
+    programs = data if isinstance(data, list) else (data.get("programs") or [])
+    for entry in programs:
+        if not isinstance(entry, dict):
+            continue
+        if _platform_handle_match(entry, platform, handle):
+            return entry
+    raise ProgramNotFoundError(
+        f"program '{handle}' not found in bounty-targets-data "
+        f"({platform}_data.json, exact match)")
+
+
+def _platform_handle_match(entry: dict, platform: str, handle: str) -> bool:
+    h = handle.strip().lower()
+
+    def _url_slug(entry, key="url") -> str:
+        return str(entry.get(key) or "").rstrip("/").rsplit("/", 1)[-1].lower()
+
+    if platform == "hackerone":
+        return str(entry.get("handle") or "").strip().lower() == h
+    if platform == "bugcrowd":
+        return (_url_slug(entry) == h
+                or str(entry.get("name") or "").strip().lower() == h)
+    if platform == "intigriti":
+        return (str(entry.get("handle") or "").strip().lower() == h
+                or str(entry.get("id") or "").strip().lower() == h
+                or _url_slug(entry) == h)
+    if platform == "yeswehack":
+        return (str(entry.get("id") or "").strip().lower() == h
+                or _url_slug(entry) == h)
+    return False
+
+
+def _platform_asset_identifier(raw: dict, platform: str) -> str:
+    if platform == "bugcrowd":
+        return str(raw.get("target") or raw.get("uri")
+                   or raw.get("ipAddress") or "").strip()
+    if platform == "intigriti":
+        return str(raw.get("endpoint") or "").strip()
+    return str(raw.get("target") or "").strip()  # yeswehack
+
+
+def _scope_from_platform_entry(entry: dict, platform: str) -> dict:
+    """Map a platform dump entry to the SAME result dict the H1 paths return:
+    {"program_name", "offers_bounties", "policy_md", "assets", "pages"}."""
+    targets = entry.get("targets") or {}
+    in_scope = targets.get("in_scope") if isinstance(targets, dict) else targets
+    out_scope = targets.get("out_of_scope") if isinstance(targets, dict) else []
+    assets: list[ScopeAssetMeta] = []
+    for raw in in_scope or []:
+        attrs = raw if isinstance(raw, dict) else {"asset_identifier": str(raw)}
+        identifier = _platform_asset_identifier(attrs, platform)
+        if not identifier:
+            continue
+        instruction = str(attrs.get("name") or attrs.get("description") or "")
+        assets.append(ScopeAssetMeta(
+            asset_identifier=identifier,
+            asset_type=str(attrs.get("type") or "").strip(),
+            eligible_for_submission=True,
+            instruction=instruction[:500],
+        ))
+    for raw in out_scope or []:
+        attrs = raw if isinstance(raw, dict) else {"asset_identifier": str(raw)}
+        identifier = _platform_asset_identifier(attrs, platform)
+        if not identifier:
+            continue
+        instruction = str(attrs.get("name") or attrs.get("description") or "")
+        assets.append(ScopeAssetMeta(
+            asset_identifier=identifier,
+            asset_type=str(attrs.get("type") or "").strip(),
+            eligible_for_submission=False,
+            instruction=instruction[:500],
+        ))
+    return {
+        "program_name": str(entry.get("name") or ""),
+        "offers_bounties": False,
+        "policy_md": "",
+        "assets": assets,
+        "pages": 1,
+    }
+
+
 def _fetch_bounty_targets_scope(handle: str, bounty_targets_fn) -> dict:
     entry = bounty_targets_fn(handle)
     targets = entry.get("targets") or {}
@@ -758,6 +906,24 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
     rest_fn = rest_fn or _rest_request
     graphql_fn = graphql_fn or _graphql_request
     bounty_targets_fn = bounty_targets_fn or fetch_bounty_targets_program
+
+    # Mission fix 7: non-HackerOne platforms compile from their OWN
+    # bounty-targets-data dump — never from H1's (a bugcrowd handle has no
+    # business being looked up in hackerone_data.json, and the old flow
+    # simply raised ProgramNotFoundError for them).
+    platform = detect_platform(handle_or_url)
+    if platform != "hackerone":
+        result = _scope_from_platform_entry(
+            fetch_bounty_targets_entry(handle, platform, bounty_targets_fn),
+            platform)
+        result.update({
+            "handle": handle,
+            "auth_mode": "keyless_public",
+            "sources": [f"bounty-targets-data:{platform}_data.json "
+                        f"(exact match)"],
+            "notes": [],
+        })
+        return result
 
     notes: list[str] = []
     auth_fallback_reason: str | None = None

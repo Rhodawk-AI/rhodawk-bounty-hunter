@@ -74,6 +74,60 @@ def env_required(name: str) -> str:
     return v
 
 
+def scope_gate(url: str) -> None:
+    """Fail-closed scope gate (mission fix 3).
+
+    spray_orchestrator.sh gates before spawning, but this module is also
+    runnable directly — until now with NO scope check at all (byte-identical
+    to upstream, flagged in both the blueprint and the project README). A
+    credential spray is the most account-lockout-dangerous tool in the kit,
+    so the module now enforces the SAME manifest contract itself:
+
+      1. RHODAWK_SPRAY_SCOPE_MANIFEST / RHODAWK_SCOPE_MANIFEST (SHA-256
+         verified via ScopeChecker.from_manifest) — target must be in scope;
+         out-of-scope ⇒ exit 3, 0 requests.
+      2. No manifest ⇒ refuse (exit 3) unless the operator set
+         RHODAWK_SPRAY_UNSAFE=1 explicitly. This is strictly STRONGER than
+         the previous behavior (no check whatsoever), never weaker.
+    """
+    manifest = (os.environ.get("RHODAWK_SPRAY_SCOPE_MANIFEST")
+                or os.environ.get("RHODAWK_SCOPE_MANIFEST") or "").strip()
+    try:
+        if manifest:
+            try:
+                from tools.scope_checker import ScopeChecker
+            except ImportError:  # standalone execution from rhodawk/tools/
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                try:
+                    from tools.scope_checker import ScopeChecker
+                except ImportError:
+                    from scope_checker import ScopeChecker  # type: ignore
+            checker = ScopeChecker.from_manifest(manifest)
+            if checker.is_in_scope(url):
+                print(f"[+] Scope gate: target inside verified manifest "
+                      f"(sha256={getattr(checker, 'manifest_sha256', '?')[:12]}…)")
+                return
+            print("[-] SCOPE BLOCK: spray target is outside the verified "
+                  "scope manifest — 0 requests sent", file=sys.stderr)
+            sys.exit(3)
+        if os.environ.get("RHODAWK_SPRAY_UNSAFE", "").strip() == "1":
+            print("[!] RHODAWK_SPRAY_UNSAFE=1: spray proceeding WITHOUT a "
+                  "verified scope manifest — operator assumes full "
+                  "authorization", file=sys.stderr)
+            return
+        print("[-] SCOPE BLOCK: no scope manifest available for the spray "
+              "target. Set RHODAWK_SPRAY_SCOPE_MANIFEST (or "
+              "RHODAWK_SCOPE_MANIFEST) to a compiled_scope.json, or set "
+              "RHODAWK_SPRAY_UNSAFE=1 to accept full responsibility — "
+              "0 requests sent", file=sys.stderr)
+        sys.exit(3)
+    except SystemExit:
+        raise
+    except ValueError as exc:  # tampered manifest
+        print(f"[-] SCOPE BLOCK: {exc} — 0 requests sent", file=sys.stderr)
+        sys.exit(3)
+
+
 def read_lines(path: str) -> list[str]:
     with open(path) as f:
         return [line.strip() for line in f if line.strip()]
@@ -204,6 +258,7 @@ def main() -> int:
     AUDIT_LOG_PATH = env_required("AUDIT_LOG")
 
     url           = env_required("SPRAY_TARGET_URL")
+    scope_gate(url)
     users_file    = env_required("SPRAY_USERS_FILE")
     passes_file   = env_required("SPRAY_PASSES_FILE")
     post_data_tpl = env("SPRAY_POST_DATA") or "username={USER}&password={PASS}"
