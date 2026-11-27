@@ -81,3 +81,52 @@ def test_now_ns_helper_returns_positive_integer():
                              capture_output=True, text=True, timeout=30)
         val = out.stdout.strip()
     assert val.isdigit() and int(val) > 0, f"_now_ns returned {val!r}"
+
+
+# ── Issue #6 (v2.0.5): Recon Summary must stay silent on missing files ───────
+
+def _summary_lines(path: Path, labels: tuple[str, ...]) -> list[str]:
+    """Exact `echo "  <label> … $(wc -l …)"` lines from the Recon Summary."""
+    return [
+        ln for ln in path.read_text().splitlines()
+        if ln.strip().startswith('echo "  ') and "wc -l" in ln
+        and any(label in ln for label in labels)
+    ]
+
+
+def test_recon_summary_missing_files_count_zero_with_zero_stderr(tmp_path):
+    """Issue #6 regression: the Recon Summary counts missing optional files
+    (live/urls.txt, subdomains/all.txt, urls/all.txt) as 0 with ZERO stderr.
+
+    The old ordering `wc -l < f 2>/dev/null || echo 0` still leaked a shell
+    error: redirections apply left-to-right, so the failed `< f` redirect
+    prints `No such file or directory` BEFORE 2>/dev/null is in effect. The
+    guard must come first: `wc -l 2>/dev/null < f || echo 0`."""
+    engine = REPO / "rhodawk" / "tools" / "recon_engine.sh"
+    lines = _summary_lines(engine, ("Subdomains:", "Live hosts:",
+                                    "URLs collected:"))
+    assert len(lines) == 3, f"expected 3 summary count lines, got {len(lines)}"
+    for ln in lines:
+        proc = subprocess.run(
+            ["bash", "-c", ln], capture_output=True, text=True, timeout=30,
+            env={"RECON_DIR": str(tmp_path / "recon-does-not-exist"),
+                 "PATH": "/usr/bin:/bin"},
+        )
+        assert proc.returncode == 0, f"{ln.strip()}: rc={proc.returncode}"
+        assert proc.stderr == "", f"stderr leaked for: {ln.strip()}"
+        assert proc.stdout.strip().endswith("0"), \
+            f"missing file must count as 0: {proc.stdout!r}"
+
+
+def test_live_urls_count_sites_use_leak_proof_redirect_order():
+    """Every live/urls.txt wc -l counting site in recon_engine.sh must apply
+    2>/dev/null BEFORE the input redirect (the v2.0.4 defect ordering)."""
+    engine = REPO / "rhodawk" / "tools" / "recon_engine.sh"
+    sites = [
+        ln for ln in engine.read_text().splitlines()
+        if "live/urls.txt" in ln and "wc -l" in ln
+    ]
+    assert sites, "expected the live/urls.txt counting sites to exist"
+    for ln in sites:
+        assert "wc -l 2>/dev/null <" in ln, \
+            f"leaky redirect order on live/urls.txt count: {ln.strip()}"

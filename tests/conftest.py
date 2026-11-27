@@ -30,7 +30,16 @@ def _isolated_rhodawk_config(tmp_path, monkeypatch):
     must land in tmp_path, never in the source tree — artifacts written into
     the package directory used to leak into built wheels. Any test needing a
     different home still overrides these itself (fixture ordering: this
-    autouse fixture runs first)."""
+    autouse fixture runs first).
+
+    RHODAWK_ROOT_SECRETS_FILE (v2.0.5 test isolation): points the legacy
+    /root/.secrets/h1_api fallback (credentials.legacy_root_secrets_file())
+    at a nonexistent tmp_path location. On a production VPS that file holds
+    LIVE HackerOne credentials — pytest must never read or print them (they
+    leaked into assertion diffs before this guard). The env var (not just a
+    module setattr) is used so subprocess-based tests inherit the isolation
+    too. Tests that specifically exercise the legacy path re-point this var
+    at their own tmp_path fixture file."""
     monkeypatch.setenv("RHODAWK_CONFIG_FILE",
                        str(tmp_path / "no-config.json"))
     # Note: the pinned directories are NOT pre-created — every writer in the
@@ -39,6 +48,8 @@ def _isolated_rhodawk_config(tmp_path, monkeypatch):
     monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rhodawk-home"))
     monkeypatch.setenv("RECON_OUT_DIR", str(tmp_path / "rhodawk-home" / "recon"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("RHODAWK_ROOT_SECRETS_FILE",
+                       str(tmp_path / "no-host-root-secrets" / "h1_api"))
 
 
 @pytest.fixture

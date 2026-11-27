@@ -1425,12 +1425,19 @@ def main():
 
     p_scope_compile = sub.add_parser(
         "scope-compile", aliases=["sc"],
-        help="Compile a program scope into a typed, hashed manifest "
-             "(authenticated paginated REST / keyless GraphQL fallback)")
+        help="Compile a program scope (HackerOne, Bugcrowd, Intigriti, "
+             "YesWeHack) into a typed, hashed manifest (authenticated "
+             "paginated REST for HackerOne / keyless public fallback)")
     p_scope_compile.add_argument(
         "handle",
-        help="Program handle or full H1 program URL "
-             "(e.g. cloudflare or https://hackerone.com/cloudflare?type=team)")
+        help="Program handle or full program URL — the platform is "
+             "auto-detected from the URL for HackerOne, Bugcrowd, Intigriti "
+             "and YesWeHack (e.g. cloudflare, "
+             "https://hackerone.com/cloudflare?type=team, "
+             "https://bugcrowd.com/engagements/<slug>, "
+             "https://app.intigriti.com/researcher/program/<c>/<p>, "
+             "https://yeswehack.com/programs/<id>; a bare handle compiles "
+             "as HackerOne)")
     p_scope_compile.add_argument(
         "--output", default="",
         help="Primary manifest path (default: <recon>/<handle>/scope/"

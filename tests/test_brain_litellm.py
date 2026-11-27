@@ -16,14 +16,6 @@ import pytest
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, ROOT)
 
-_ENV = (
-    "BRAIN_PROVIDER", "BRAIN_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-    "XAI_API_KEY", "GROQ_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
-    "MOONSHOT_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY",
-    "CEREBRAS_API_KEY", "PERPLEXITY_API_KEY", "OPENROUTER_API_KEY",
-    "ORCAROUTER_API_KEY", "LITELLM_API_KEY", "LITELLM_API_BASE",
-    "LITELLM_BASE_URL", "REQUESTY_API_KEY",
-)
 
 
 def _install_litellm_stub(completion=None, valid_models=None):
@@ -46,10 +38,27 @@ def _install_litellm_stub(completion=None, valid_models=None):
 
 
 @pytest.fixture
-def brain_module(monkeypatch):
-    for env in _ENV:
-        monkeypatch.delenv(env, raising=False)
+def brain_module(tmp_path, monkeypatch):
+    """Import brain with a fully isolated provider environment.
+
+    Every credential env var in LLMClient.PROVIDER_KEY_ENV is cleared (plus
+    the NVIDIA NIM base URL, LiteLLM proxy URLs, BRAIN_PROVIDER/BRAIN_MODEL
+    and OLLAMA_HOST), so a host with e.g. NVIDIA_API_KEY exported can never
+    steer LLMClient() auto-detect away from litellm. HOME and RHODAWK_HOME
+    are pinned to tmp_path so the host's ~/.rhodawk/config.json and
+    ~/.rhodawk/.env can never leak into these tests either (RHODAWK_CONFIG_FILE
+    is already pinned to a nonexistent tmp_path file by the conftest autouse
+    fixture)."""
     import brain
+    # Clear AFTER import (PROVIDER_KEY_ENV must exist), BEFORE reload so the
+    # reload sees the sanitized environment (module-level OLLAMA_HOST etc.).
+    provider_env_keys = list(brain.LLMClient.PROVIDER_KEY_ENV.values())
+    for env in provider_env_keys + [
+            "BRAIN_PROVIDER", "BRAIN_MODEL", "NVIDIA_NIM_BASE_URL",
+            "LITELLM_API_BASE", "LITELLM_BASE_URL", "OLLAMA_HOST"]:
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rhodawk-home"))
     importlib.reload(brain)
     return brain
 

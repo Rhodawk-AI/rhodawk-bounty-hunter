@@ -399,24 +399,34 @@ def main(argv=None) -> int:
             args.manifest, tool_input, command, os.environ)
         if path is not None:
             ok, error = verify_manifest(str(path))
-            if ok:
-                ScopeChecker = _load_scope_checker()
-                if ScopeChecker is not None:
-                    try:
-                        checker = ScopeChecker.from_manifest(str(path))
-                    except ValueError as exc:  # tampered manifest
-                        print(f"{BLOCK_PREFIX}: curl/wget denied — manifest "
-                              f"failed integrity verification ({exc}) "
-                              f"(source: {source})", file=sys.stderr)
-                        return 2
-                    oos = _out_of_scope_fetch_urls(command, checker)
-                    if oos:
-                        print(f"{BLOCK_PREFIX}: curl/wget target(s) outside "
-                              f"the verified scope manifest (source: {source}): "
-                              f"{', '.join(sorted(set(oos)))}. Re-run "
-                              f"`rhodawk scope-compile <handle>` if the "
-                              f"program scope changed.", file=sys.stderr)
-                        return 2
+            if not ok:
+                # FAIL CLOSED: a manifest that resolves but fails verification
+                # (tampered, unreadable, missing) must block the fetch —
+                # silently allowing here would disable the scope gate.
+                print(f"{BLOCK_PREFIX}: curl/wget denied — {error} "
+                      f"(source: {source})", file=sys.stderr)
+                return 2
+            ScopeChecker = _load_scope_checker()
+            if ScopeChecker is None:
+                print(f"{BLOCK_PREFIX}: curl/wget denied — scope checker "
+                      f"unavailable (fail-closed) (source: {source})",
+                      file=sys.stderr)
+                return 2
+            try:
+                checker = ScopeChecker.from_manifest(str(path))
+            except ValueError as exc:  # tampered manifest
+                print(f"{BLOCK_PREFIX}: curl/wget denied — manifest "
+                      f"failed integrity verification ({exc}) "
+                      f"(source: {source})", file=sys.stderr)
+                return 2
+            oos = _out_of_scope_fetch_urls(command, checker)
+            if oos:
+                print(f"{BLOCK_PREFIX}: curl/wget target(s) outside "
+                      f"the verified scope manifest (source: {source}): "
+                      f"{', '.join(sorted(set(oos)))}. Re-run "
+                      f"`rhodawk scope-compile <handle>` if the "
+                      f"program scope changed.", file=sys.stderr)
+                return 2
         return 0  # no manifest resolvable / non-URL fetch: unchanged behavior
     if classification != "active":
         return 0  # read-only / non-target: allow without checks

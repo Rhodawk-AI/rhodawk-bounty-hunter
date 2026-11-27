@@ -217,3 +217,36 @@ def test_hackerone_path_unchanged(monkeypatch):
         )
     # the platform-specific entry fetch was never consulted for an H1 handle
     assert "platform" not in called
+
+
+# ── Issue #5 (v2.0.5): --help must document all four platforms ────────────────
+
+def test_help_outputs_document_all_four_platforms(capsys, monkeypatch):
+    """Regression: PR #6 added Bugcrowd / Intigriti / YesWeHack via full-URL
+    auto-detection, but both CLI help surfaces (rhodawk scope-compile --help
+    and python3 -m rhodawk.tools.scope_compiler --help) still described the
+    command as HackerOne-only. Both must name every supported platform."""
+    import engine as engine_module  # noqa: PLC0415  (pythonpath=rhodawk)
+
+    # 1. module CLI: python3 -m rhodawk.tools.scope_compiler --help
+    with pytest.raises(SystemExit) as excinfo:
+        sc.main(["--help"])
+    assert excinfo.value.code == 0
+    module_help = capsys.readouterr().out
+
+    # 2. engine CLI: rhodawk scope-compile --help
+    monkeypatch.setattr(sys, "argv",
+                        ["rhodawk", "scope-compile", "--help"])
+    with pytest.raises(SystemExit) as excinfo2:
+        engine_module.main()
+    assert excinfo2.value.code == 0
+    engine_help = capsys.readouterr().out
+
+    for platform in ("Bugcrowd", "Intigriti", "YesWeHack", "HackerOne"):
+        assert platform in module_help, \
+            f"module --help missing {platform}: {module_help[-400:]}"
+        assert platform in engine_help, \
+            f"scope-compile --help missing {platform}: {engine_help[-400:]}"
+    # the handle argument documents URL auto-detection, not just H1 handles
+    assert "auto-detect" in module_help.lower()
+    assert "auto-detect" in engine_help.lower()

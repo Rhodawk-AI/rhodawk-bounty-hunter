@@ -1118,12 +1118,17 @@ def compile_and_save(handle_or_url: str, *, output=None,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scope_compiler.py",
-        description="Compile a HackerOne program scope into a typed, hashed "
-                    "CompiledScopeManifest (lossless, drift-audited).",
+        description="Compile a bug-bounty program scope into a typed, hashed "
+                    "CompiledScopeManifest (lossless, drift-audited). "
+                    "Platforms: HackerOne, Bugcrowd, Intigriti, YesWeHack "
+                    "(full program URL auto-detection; authenticated REST "
+                    "remains HackerOne-only).",
     )
     parser.add_argument("handle",
-                        help="program handle or full H1 URL "
-                             "(cloudflare or https://hackerone.com/cloudflare?type=team)")
+                        help="program handle or full program URL — the "
+                             "platform is auto-detected from the URL for "
+                             "HackerOne, Bugcrowd, Intigriti and YesWeHack "
+                             "(a bare handle compiles as HackerOne)")
     parser.add_argument("--output", default=None,
                         help="primary manifest path "
                              "(default: $RECON_OUT_DIR/scope/compiled_scope.json "

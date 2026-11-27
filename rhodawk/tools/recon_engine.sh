@@ -957,7 +957,7 @@ if [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
     # Extract just the URLs for other tools
     awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
 
-    LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
+    LIVE_COUNT=$(wc -l 2>/dev/null < "$RECON_DIR/live/urls.txt" || echo 0)
     log_done "Live hosts: $LIVE_COUNT"
 
     # Separate by status code
@@ -1026,7 +1026,7 @@ if [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
             [ -s "$RECON_DIR/live/httpx_redirect_probe.txt" ] && \
                 cat "$RECON_DIR/live/httpx_redirect_probe.txt" >> "$RECON_DIR/live/httpx_full.txt"
             awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" 2>/dev/null | sort -u > "$RECON_DIR/live/urls.txt" || true
-            LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
+            LIVE_COUNT=$(wc -l 2>/dev/null < "$RECON_DIR/live/urls.txt" || echo 0)
         fi
     fi
 else
@@ -1660,9 +1660,9 @@ echo "  Recon Summary — $TARGET"
 echo "  Completed: $(date)"
 echo "============================================="
 echo ""
-echo "  Subdomains:        $(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)"
-echo "  Live hosts:        $(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)"
-echo "  URLs collected:    $(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null || echo 0)"
+echo "  Subdomains:        $(wc -l 2>/dev/null < "$RECON_DIR/subdomains/all.txt" || echo 0)"
+echo "  Live hosts:        $(wc -l 2>/dev/null < "$RECON_DIR/live/urls.txt" || echo 0)"
+echo "  URLs collected:    $(wc -l 2>/dev/null < "$RECON_DIR/urls/all.txt" || echo 0)"
 [ -f "$RECON_DIR/ports/open_ports.txt" ] && \
 echo "  Open ports:        $(wc -l < "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || echo 0)"
 [ -f "$RECON_DIR/urls/with_params.txt" ] && \

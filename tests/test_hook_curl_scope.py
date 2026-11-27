@@ -88,12 +88,30 @@ def test_tampered_manifest_does_not_authorize_curl(tmp_path):
     Path(manifest).write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n",
                               encoding="utf-8")
     proc = _run_hook("curl -s https://evil.example.com/x", manifest=manifest)
-    # evil.example.com is NOT in the untampered allowlist → blocked regardless;
-    # the key assertion is that a broken manifest never widens scope.
-    assert proc.returncode in (0, 2)
-    if proc.returncode == 0:
-        # allow path must not have come from the tampered pattern
-        assert "SCOPE_HOOK_BLOCK" not in proc.stderr
+    # Strict fail-closed: a manifest that resolves but fails verification
+    # must BLOCK (exit 2 + SCOPE_HOOK_BLOCK), never fall through to allow.
+    assert proc.returncode == 2, \
+        f"expected fail-closed block, got {proc.returncode}: {proc.stderr[-300:]}"
+    assert "SCOPE_HOOK_BLOCK" in proc.stderr
+    assert "denied" in proc.stderr
+
+
+def test_scope_checker_unavailable_blocks_fetch_fail_closed(tmp_path, monkeypatch, capsys):
+    """Regression (fail-closed gate): when a manifest resolves and verifies,
+    but the ScopeChecker itself cannot be imported, the fetch must be blocked
+    (exit 2 + SCOPE_HOOK_BLOCK) — never fall through to allow (exit 0)."""
+    manifest = _manifest(tmp_path, ["127.0.0.1"])
+    monkeypatch.syspath_prepend(str(REPO / "rhodawk" / "tools"))
+    import hook_scope_guard
+    monkeypatch.setenv("RHODAWK_SCOPE_MANIFEST", manifest)
+    monkeypatch.setattr(hook_scope_guard, "_load_scope_checker", lambda: None)
+    rc = hook_scope_guard.main(["--tool", "Bash",
+                                "--command",
+                                "curl -s http://127.0.0.1:8099/api"])
+    captured = capsys.readouterr()
+    assert rc == 2, f"expected fail-closed block, got {rc}: {captured.err[-300:]}"
+    assert "SCOPE_HOOK_BLOCK" in captured.err
+    assert "scope checker unavailable" in captured.err
 
 
 def test_mcp_tool_names_still_classified_active(tmp_path):
