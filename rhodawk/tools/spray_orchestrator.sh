@@ -111,6 +111,12 @@ if ! rhodawk_scope_gate_check "$TARGET_URL"; then
     log_err "Target is outside the verified scope manifest — 0 requests sent"
     exit 3
 fi
+# Defense in depth (mission fix 3): forward the verified manifest so the
+# spawned spray modules enforce the SAME contract themselves — they are
+# runnable standalone and previously had NO internal scope check.
+if [ -n "${_SCOPE_GATE_MANIFEST:-}" ]; then
+    export RHODAWK_SPRAY_SCOPE_MANIFEST="$_SCOPE_GATE_MANIFEST"
+fi
 
 # umask 077 (R-18): spray audit logs contain usernames against a live target.
 umask 077

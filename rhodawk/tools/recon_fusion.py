@@ -61,6 +61,10 @@ CLASS_CDN_EDGE = "CDN_EDGE"
 CLASS_SAAS = "THIRD_PARTY_SAAS"
 CLASS_ORIGIN = "FIRST_PARTY_ORIGIN"
 
+# Phase 5.75 headless JS crawl: which captured paths surface in
+# js_endpoints[] (API-shaped paths only — static assets stay in urls[]).
+_API_PATH_RE = re.compile(r"^/(api(/|$)|v[0-9]+/|rest/|graphql)")
+
 # tool_health pseudo-capability recording the canonical-fusion step itself.
 # A failed fuse used to be swallowed as a single non-fatal log line; it is now
 # persisted as a FAILED row in rtw_manifest.json so recon_truth.json's
@@ -604,6 +608,10 @@ def build_truth(recon_dir: Path, target: str,
                    ("urls/katana.txt", recon_dir / "urls" / "katana.txt")]
     for path in _glob_one(recon_dir, "rtw/*/rtw_urls.txt"):
         url_sources.append((f"rtw/{path.parent.name}/rtw_urls.txt", path))
+    # Phase 5.75 headless JS crawl (opt-in; see CRAWLER-REDESIGN.md). Emitted
+    # BEFORE urls/all.txt so a crawled URL that also appears in the merged
+    # corpus keeps its real provenance alongside the aggregate label.
+    url_sources.append(("js_crawl/endpoints.txt", recon_dir / "js_crawl" / "endpoints.txt"))
     url_sources.append(("urls/all.txt", recon_dir / "urls" / "all.txt"))
     urls: Dict[Tuple, dict] = {}
     for label, path in url_sources:
@@ -618,9 +626,24 @@ def build_truth(recon_dir: Path, target: str,
                 for row in urls.values()]
     url_rows.sort(key=lambda r: r["url"])
 
-    # JS endpoints + ports.
+    # JS endpoints + ports. Phase 5 static extraction feeds js/endpoints.txt;
+    # the Phase 5.75 headless crawl additionally contributes the PATH form of
+    # every API-looking runtime endpoint it captured (same schema, provenance
+    # "js_crawl/endpoints.txt" — downstream hunt/validate/report need no
+    # changes; see CRAWLER-REDESIGN.md §5).
     js_rows = [{"endpoint": ep, "discovered_by": ["js/endpoints.txt"]}
                for ep in sorted(set(_read_lines(recon_dir / "js" / "endpoints.txt")))]
+    _js_seen = {r["endpoint"] for r in js_rows}
+    for canon in sorted(set(_read_lines(recon_dir / "js_crawl" / "endpoints.txt"))):
+        if "://" not in canon:
+            continue
+        path_form = urlsplit(canon).path or "/"
+        if not _API_PATH_RE.match(path_form) or path_form in _js_seen:
+            continue
+        _js_seen.add(path_form)
+        js_rows.append({"endpoint": path_form,
+                        "discovered_by": ["js_crawl/endpoints.txt"]})
+    js_rows.sort(key=lambda r: r["endpoint"])
     ports = parse_nmap_greppable(
         _read_lines(recon_dir / "ports" / "nmap_greppable.txt"))
     if not ports:

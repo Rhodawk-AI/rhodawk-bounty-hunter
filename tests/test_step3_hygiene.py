@@ -303,12 +303,18 @@ class TestDoctor:
         assert "0 FAIL" in proc.stdout
         assert "Environment doctor" in proc.stdout
 
-    def test_doctor_fail_on_missing_rtw(self, tmp_path, monkeypatch):
+    def test_doctor_warns_on_missing_rtw(self, tmp_path, monkeypatch):
+        # Updated by fix 6 (mission item 6): every delegated capability is
+        # optional (RTW_MISSING_DEPS ⇒ SKIPPED, never blocks), so a missing
+        # reconFTW checkout is a WARN — the native stack runs fully without
+        # it and doctor must not exit 1 on an otherwise healthy install.
         self._env(tmp_path, monkeypatch,
                   rtw_home=tmp_path / "nonexistent-rtw")
         proc = self._run(tmp_path)
-        assert proc.returncode == 1
-        assert "[FAIL]" in proc.stdout
+        assert proc.returncode == 0
+        assert "[FAIL]" not in proc.stdout
+        assert "[WARN]" in proc.stdout
+        assert "reconFTW checkout" in proc.stdout
         assert "install.sh" in proc.stdout
 
     def test_doctor_warns_on_missing_chromium_and_keys(self, tmp_path,

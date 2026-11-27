@@ -432,7 +432,10 @@ class TestScopedRedirectEnforcement:
         import engine
         captured = {}
 
-        def fake_run_shell(cmd, cwd=None, timeout=3600, env=None):
+        def fake_run_shell(cmd, cwd=None, timeout=3600, env=None,
+                           full_env=False):
+            # full_env (fix 4): the env passed IS the child environment —
+            # cmd_recon/cmd_hunt now build a redacted full env.
             captured["env"] = dict(env or {})
             return True, ""
 

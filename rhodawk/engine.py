@@ -56,6 +56,7 @@ import textwrap
 from pathlib import Path
 try:
     from rhodawk._compat import get_env, ensure_home_migrated
+    from rhodawk.tools.credentials import redact_env_for_scanners
 except ImportError:  # flat / script execution — resolve package dir
     import os as _compat_os, sys as _compat_sys
     _compat_dir = _compat_os.path.abspath(__file__)
@@ -64,6 +65,10 @@ except ImportError:  # flat / script execution — resolve package dir
     if _compat_dir not in _compat_sys.path:
         _compat_sys.path.insert(0, _compat_dir)
     from _compat import get_env, ensure_home_migrated
+    try:  # package layout (rhodawk/ on sys.path)
+        from tools.credentials import redact_env_for_scanners
+    except ImportError:
+        from credentials import redact_env_for_scanners
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 HERE     = Path(__file__).resolve().parent  # resolve symlink first so /usr/local/bin/rhodawk -> repo dir
@@ -254,13 +259,19 @@ def _get_brain(provider: str | None = None):
 
 
 def _run_shell(cmd: list[str], cwd: str | None = None, timeout: int = 3600,
-               env: dict | None = None) -> tuple[bool, str]:
+               env: dict | None = None, full_env: bool = False) -> tuple[bool, str]:
     """Run a command with live output, return (success, combined_output).
     Takes an argv list, not a shell string — see
     SECURITY-REVIEW-2026-08-22.md finding #5 for why shell=True with
     f-string-interpolated targets was a command injection bug.
-    `env`, when given, is merged over the current environment."""
-    proc_env = {**os.environ, **env} if env else None
+    `env`, when given, is merged over the current environment — EXCEPT when
+    `full_env=True`, where `env` IS the child's complete environment. The
+    scanner spawns (cmd_recon/cmd_hunt) pass full_env=True with an env that
+    went through tools.credentials.redact_env_for_scanners(): vault/platform/
+    LLM secrets must not reach scanner subprocesses (mission fix 4), which a
+    merge could never achieve."""
+    proc_env = env if (env is not None and full_env) else (
+        {**os.environ, **env} if env else None)
     try:
         proc = subprocess.Popen(
             cmd, shell=False, cwd=cwd or str(HERE), env=proc_env,
@@ -724,6 +735,11 @@ def _scope_flag_args(args) -> list[str]:
     return out
 
 
+def _js_crawl_args(args) -> list[str]:
+    """Forward the opt-in --js-crawl flag to recon_engine.sh (Phase 5.75)."""
+    return ["--js-crawl"] if getattr(args, "js_crawl", False) else []
+
+
 def cmd_recon(args):
     """Run recon pipeline then AI surface analysis."""
     from tools.target_normalize import recon_dirname
@@ -751,11 +767,15 @@ def cmd_recon(args):
         # httpx does NOT follow redirects blindly — an in-scope host must not
         # be able to 302 the probe onto an out-of-scope host. Same rule as
         # tools/hunt.py run_recon.
-        child_env = {"RECON_OUT_DIR": str(recon_dir)}
+        # full_env=True + redaction: vault/platform/LLM secrets never reach
+        # scanner subprocesses (mission fix 4); RECON_OUT_DIR still pinned.
+        child_env = {**redact_env_for_scanners(os.environ),
+                     "RECON_OUT_DIR": str(recon_dir)}
         if not getattr(args, "no_scope_check", False):
             child_env["SCOPE_ENFORCED"] = "1"
-        success, output = _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
-                                     env=child_env)
+        success, output = _run_shell(["bash", str(script), target, *_scope_flag_args(args),
+                                      *_js_crawl_args(args)],
+                                     env=child_env, full_env=True)
         if "SCOPE BLOCK" in output:
             # Live-run fix: the pre-flight scope gate fired — 0 packets sent,
             # 0 tools executed. Abort the whole command with a non-zero exit
@@ -795,12 +815,16 @@ def cmd_hunt(args):
     if script.exists():
         info("Phase 1: Recon...")
         # B2: scope-enforced mode whenever scoping is active (see cmd_recon).
-        child_env = {"RECON_OUT_DIR": str(recon_dir)}
+        # full_env=True + redaction: vault/platform/LLM secrets never reach
+        # scanner subprocesses (mission fix 4); RECON_OUT_DIR still pinned.
+        child_env = {**redact_env_for_scanners(os.environ),
+                     "RECON_OUT_DIR": str(recon_dir)}
         if not getattr(args, "no_scope_check", False):
             child_env["SCOPE_ENFORCED"] = "1"
         _rc_success, _rc_output = _run_shell(
-            ["bash", str(script), target, *_scope_flag_args(args)],
-            env=child_env)
+            ["bash", str(script), target, *_scope_flag_args(args),
+             *_js_crawl_args(args)],
+            env=child_env, full_env=True)
         if "SCOPE BLOCK" in _rc_output:
             # Live-run fix: never let the hunt continue (the vuln scanner
             # probes the target itself) once the pre-flight scope gate has
@@ -1045,14 +1069,20 @@ def cmd_doctor(args):
     else:
         record("PASS", "Core binaries", f"{len(core)}/{len(core)} on PATH")
 
-    # 2. reconFTW checkout: RTW_HOME + pinned commit + executable bit
+    # 2. reconFTW checkout: RTW_HOME + pinned commit + executable bit.
+    #    Gap fix (mission item 6): every delegated capability is OPTIONAL —
+    #    capability_registry classifies them RTW_MISSING_DEPS ⇒ SKIPPED, never
+    #    blocking, and the native stack runs fully without reconFTW. A missing
+    #    (or broken) checkout therefore degrades 7 optional capabilities; it
+    #    was doctor's only FAIL on an otherwise working system and made
+    #    `rhodawk doctor` exit 1 for a healthy native install. WARN, not FAIL.
     rtw = check_rtw_repo()
     if not Path(rtw["rtw_home"]).is_dir():
-        record("FAIL", "reconFTW checkout",
-               f"not found at {rtw['rtw_home']} (RTW_HOME)",
+        record("WARN", "reconFTW checkout",
+               f"not found at {rtw['rtw_home']} (RTW_HOME) — 7 delegated capabilities disabled (native recon unaffected)",
                "bash install.sh   # repo checkout — clones reconFTW + persists rtw_home")
     elif not rtw["executable"]:
-        record("FAIL", "reconFTW checkout", f"{rtw['script']} is not executable",
+        record("WARN", "reconFTW checkout", f"{rtw['script']} is not executable — delegation disabled (native recon unaffected)",
                f'chmod +x "{rtw["script"]}"')
     elif rtw["commit_matches_pin"] is False:
         record("WARN", "reconFTW checkout",
@@ -1362,6 +1392,10 @@ def main():
     p_recon.add_argument("--model", dest="cmd_model",
                          help="Force model for this invocation (global -m/--model)")
     _add_scope_args(p_recon)
+    p_recon.add_argument("--js-crawl", action="store_true", dest="js_crawl",
+                         help="Opt-in headless JS crawl (Phase 5.75, Playwright): capture "
+                              "runtime XHR/fetch endpoints of SPA targets. Skips with a WARN "
+                              "when Playwright/Chromium is unavailable.")
 
     p_hunt = sub.add_parser("hunt", aliases=["h"], help="Full hunt pipeline")
     p_hunt.add_argument("target", help="Target domain or IP")
@@ -1371,6 +1405,10 @@ def main():
     p_hunt.add_argument("--model", dest="cmd_model",
                         help="Force model for this invocation (global -m/--model)")
     _add_scope_args(p_hunt)
+    p_hunt.add_argument("--js-crawl", action="store_true", dest="js_crawl",
+                        help="Opt-in headless JS crawl (Phase 5.75, Playwright): capture "
+                             "runtime XHR/fetch endpoints of SPA targets. Skips with a WARN "
+                             "when Playwright/Chromium is unavailable.")
 
     p_val = sub.add_parser("validate", aliases=["v"], help="7-Question Gate on a finding")
     p_val.add_argument("finding", nargs="?", default="", help="Finding description (or pipe via stdin)")

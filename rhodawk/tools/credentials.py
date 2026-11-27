@@ -187,6 +187,53 @@ KEYLESS_TOOLS = [
 ]
 
 ALL_MANAGED_VARS = [f["var"] for g in CREDENTIAL_GROUPS for f in g["fields"]]
+
+# ---------------------------------------------------------------------------
+# Scanner child-env redaction (mission fix 4).
+#
+# load_credentials() exports vault values into os.environ so the Python-side
+# consumers (scope compiler, MCP servers, brain) can read them. Every scanner
+# child, however, inherits that environment too — a live repro on this HEAD
+# showed an exported H1_API_TOKEN inside a stubbed subfinder's env during a
+# plain `rhodawk recon example.com`. The contract below strips vault secrets
+# from scanner children while KEEPING:
+#   - PDCP_API_KEY / CHAOS_API_KEY — recon binaries (subfinder, chaos)
+#     legitimately consume these at runtime; stripping them would degrade
+#     recon every run;
+#   - RHODAWK_AUTH_HEADERS / RHODAWK_SESSION_ID — the operator-wired auth
+#     session exists precisely to be plumbed into scanners.
+# ---------------------------------------------------------------------------
+
+RECON_PROVIDER_KEYS = ("PDCP_API_KEY", "CHAOS_API_KEY")
+
+# LLM provider keys known to brain.py that are NOT rows in CREDENTIAL_GROUPS
+# (operators can configure them purely via the environment).
+EXTRA_LLM_SECRET_VARS = (
+    "XAI_API_KEY", "GEMINI_API_KEY", "MOONSHOT_API_KEY", "MISTRAL_API_KEY",
+    "TOGETHER_API_KEY", "CEREBRAS_API_KEY", "PERPLEXITY_API_KEY",
+    "ORCAROUTER_API_KEY", "FLUXION_API_KEY", "REQUESTY_API_KEY",
+    "LITELLM_API_KEY", "NVIDIA_API_KEY",
+)
+
+
+def secret_env_vars_to_strip() -> tuple:
+    """Vault secret vars minus the recon-provider allowlist, plus the
+    H1_TOKEN input alias (user:token) and environment-only LLM keys."""
+    strip = {f["var"] for g in CREDENTIAL_GROUPS for f in g["fields"]
+             if f.get("secret")} - set(RECON_PROVIDER_KEYS)
+    strip.add("H1_TOKEN")
+    strip.update(EXTRA_LLM_SECRET_VARS)
+    return tuple(sorted(strip))
+
+
+def redact_env_for_scanners(env: dict) -> dict:
+    """Return a copy of `env` safe to hand to a scanner subprocess.
+
+    Vault/platform/LLM secrets are removed; everything else (PATH, scope
+    wiring, auth session, recon-provider keys) passes through unchanged.
+    The input dict is never mutated."""
+    strip = set(secret_env_vars_to_strip())
+    return {k: v for k, v in env.items() if k not in strip}
 # H1_TOKEN is an input alias (H1_TOKEN=user:token), not a stored vault key.
 _LOOKUP_VARS = ALL_MANAGED_VARS + ["H1_TOKEN"]
 

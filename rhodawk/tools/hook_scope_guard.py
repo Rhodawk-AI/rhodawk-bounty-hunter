@@ -138,6 +138,14 @@ _MANIFEST_IN_COMMAND_RE = re.compile(
     r"(?:--scope-manifest|--manifest)[\s=](\"[^\"]+\"|'[^']+'|\S+)"
 )
 
+# Fix 2 (mission item 2): bare curl/wget to an arbitrary host is real
+# network traffic toward a possibly out-of-scope target. When a scope
+# manifest IS resolvable, every explicit http(s) URL in the command must be
+# inside the verified manifest; without any manifest the documented
+# allow-behavior is unchanged (fail-closed only against a KNOWN authority).
+CURL_WGET_RE = re.compile(r"\b(?:curl|wget)\b")
+_HTTP_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
 
 def classify(tool_name: str, tool_input: dict) -> str:
     """Return 'active' when the tool call drives target-side network work."""
@@ -154,6 +162,13 @@ def classify(tool_name: str, tool_input: dict) -> str:
                 return "active"
             if ACTIVE_CLI_RE.search(command):
                 return "active"
+            if CURL_WGET_RE.search(command):
+                # Fix 2: bare curl/wget IS network work. Classified as
+                # "fetch": checked against a RESOLVABLE manifest when one
+                # exists (out-of-scope URL host ⇒ blocked); without any
+                # manifest the documented allow behavior is unchanged, so
+                # installers / doctor Bash usage keeps working.
+                return "fetch"
 
     return "readonly"  # read-only and unknown tools are non-target -> allow
 
@@ -286,6 +301,39 @@ def verify_manifest(raw_path: str):
     return False, (last_error or f"manifest not found: {raw_path}")
 
 
+# ── fetch (curl/wget) scope check — Fix 2 ─────────────────────────────────
+
+def _load_scope_checker():
+    """Import ScopeChecker from either supported import path."""
+    try:
+        sys.path.insert(0, str(HERE))
+        from scope_checker import ScopeChecker  # type: ignore
+        return ScopeChecker
+    except ImportError:
+        pass
+    try:
+        sys.path.insert(0, str(RHODAWK_DIR))
+        from tools.scope_checker import ScopeChecker  # type: ignore
+        return ScopeChecker
+    except ImportError:
+        pass
+    return None
+
+
+def _out_of_scope_fetch_urls(command: str, checker) -> list:
+    """http(s) URLs in a curl/wget command that the verified manifest does
+    NOT cover. Non-URL curl invocations (--help, file uploads) yield []."""
+    hosts_out = []
+    for url in _HTTP_URL_RE.findall(command or ""):
+        try:
+            if not checker.is_in_scope(url):
+                parsed = urlparse(url)
+                hosts_out.append(parsed.netloc or url)
+        except Exception:  # noqa: BLE001 — uncheckable URL: fail-closed
+            hosts_out.append(url)
+    return hosts_out
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
@@ -339,7 +387,38 @@ def main(argv=None) -> int:
     command = args.command if args.command is not None \
         else str(tool_input.get("command") or "")
 
-    if classify(tool_name, tool_input) != "active":
+    classification = classify(tool_name, tool_input)
+    if classification == "fetch":
+        # Fix 2 (mission item 2): curl/wget with explicit http(s) URLs is
+        # checked against a RESOLVABLE manifest. Without any resolvable
+        # manifest the allow-behavior is unchanged (manifest-less sessions
+        # keep working: installers, doctor Bash, ad-hoc curls to unrelated
+        # services). With one, out-of-scope fetch hosts are blocked — the
+        # same contract every bundled scanner already honors.
+        path, _res_err, source = resolve_manifest(
+            args.manifest, tool_input, command, os.environ)
+        if path is not None:
+            ok, error = verify_manifest(str(path))
+            if ok:
+                ScopeChecker = _load_scope_checker()
+                if ScopeChecker is not None:
+                    try:
+                        checker = ScopeChecker.from_manifest(str(path))
+                    except ValueError as exc:  # tampered manifest
+                        print(f"{BLOCK_PREFIX}: curl/wget denied — manifest "
+                              f"failed integrity verification ({exc}) "
+                              f"(source: {source})", file=sys.stderr)
+                        return 2
+                    oos = _out_of_scope_fetch_urls(command, checker)
+                    if oos:
+                        print(f"{BLOCK_PREFIX}: curl/wget target(s) outside "
+                              f"the verified scope manifest (source: {source}): "
+                              f"{', '.join(sorted(set(oos)))}. Re-run "
+                              f"`rhodawk scope-compile <handle>` if the "
+                              f"program scope changed.", file=sys.stderr)
+                        return 2
+        return 0  # no manifest resolvable / non-URL fetch: unchanged behavior
+    if classification != "active":
         return 0  # read-only / non-target: allow without checks
 
     explicit = args.manifest

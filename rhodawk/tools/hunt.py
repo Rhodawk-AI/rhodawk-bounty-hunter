@@ -34,6 +34,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.auth_session import AuthSession, add_cli_args, session_from_args  # noqa: E402
 from tools.banner import print_banner  # noqa: E402
+from tools.credentials import redact_env_for_scanners  # noqa: E402
 from tools.scope_checker import ScopeChecker, ScopeError  # noqa: E402
 try:
     from rhodawk._compat import get_env, ensure_home_migrated
@@ -512,7 +513,7 @@ def run_recon(domain, quick=False, scope_lock=False):
     # `domain` is user-controlled, so a shell=True command with "{domain}" was a
     # command-injection vector (e.g. domain = 'a";id;"'). Use an argv list with
     # shell=False so the target can never break out into shell syntax.
-    child_env = os.environ.copy()
+    child_env = redact_env_for_scanners(os.environ)
     child_env["TARGET_TYPE"] = target_type
     if scope_lock:
         child_env["SCOPE_LOCK"] = "1"
@@ -741,7 +742,7 @@ def run_graphql_audit(domain):
         log("info", "No GraphQL endpoints found — skip graphql audit")
         return False
 
-    child_env = os.environ.copy()
+    child_env = redact_env_for_scanners(os.environ)
     if _AUTH_SESSION is not None:
         _AUTH_SESSION.export_to_env(child_env)
 
@@ -790,7 +791,7 @@ def run_vuln_scan(domain, quick=False):
     log("info", f"Running vulnerability scanner on {domain}...")
     script = os.path.join(TOOLS_DIR, "vuln_scanner.sh")
 
-    child_env = os.environ.copy()
+    child_env = redact_env_for_scanners(os.environ)
     if _AUTH_SESSION is not None:
         _AUTH_SESSION.export_to_env(child_env)
 
@@ -919,7 +920,7 @@ def run_cve_hunt(domain):
         return False
 
     log("info", f"Running CVE sweep on {domain}...")
-    child_env = os.environ.copy()
+    child_env = redact_env_for_scanners(os.environ)
     if _AUTH_SESSION is not None:
         _AUTH_SESSION.export_to_env(child_env)
 
