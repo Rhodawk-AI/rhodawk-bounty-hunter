@@ -27,10 +27,27 @@ if [ -d "$_rhw_legacy" ] && [ ! -d "$HOME/.rhodawk" ]; then
     mv "$_rhw_legacy" "$HOME/.rhodawk" \
         || echo "[!] could not migrate pre-2.0 data home to ~/.rhodawk"
 fi
+
+# ── Permission tightening for the data home ────────────────────────────────
+# v2.0.5 P0 fix: the managed standalone venv lives under the data home and
+# MUST keep its executable bits — the old blanket `find -type f -exec chmod
+# 600` stripped +x from venv/bin/* on every (re-)run and the installed CLI
+# self-destructed on its next startup (exit 126). The venv subtree is pruned
+# from BOTH passes; sensitive config/data files (config.json, .env,
+# oauth.json, vault files, recon/findings) are still tightened. Symlinks are
+# never matched (-type d / -type f exclude them without -L), so chmod cannot
+# follow a link to its target. If RHODAWK_HOME points somewhere else, that
+# home is not walked here at all, so its venv was never at risk.
+tighten_rhodawk_home_perms() {
+    local rh_home="$1"
+    chmod 700 "$rh_home" 2>/dev/null || true
+    find "$rh_home" -path "$rh_home/venv" -prune -o \
+        -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
+    find "$rh_home" -path "$rh_home/venv" -prune -o \
+        -type f -exec chmod 600 {} + 2>/dev/null || true
+}
 if [ -d "$HOME/.rhodawk" ]; then
-    chmod 700 "$HOME/.rhodawk" 2>/dev/null || true
-    find "$HOME/.rhodawk" -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
-    find "$HOME/.rhodawk" -type f -exec chmod 600 {} + 2>/dev/null || true
+    tighten_rhodawk_home_perms "$HOME/.rhodawk"
 fi
 
 

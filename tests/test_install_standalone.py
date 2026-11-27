@@ -12,9 +12,13 @@ These tests drive the real scripts end to end in a temp bin directory, so the
 regression cannot come back unnoticed on a bash 4+ developer machine.
 """
 
+import importlib
 import os
+import re
 import shutil
+import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -195,3 +199,124 @@ def test_uninstall_preserves_unmarked_venv(tmp_path):
     assert not (bin_dir / "rhodawk").exists()
     assert venv_dir.exists()
     assert "no rhodawk-managed marker" in proc.stdout
+
+
+# ── P0 regression: permission tightening must never neuter the venv ──────────
+# Live failure on a blank Ubuntu 24.04 box: the standalone venv was installed
+# under ~/.rhodawk, then the blanket `chmod 600` passes (install.sh find pass
+# + _compat.ensure_home_migrated rglob walk — which runs on EVERY `rhodawk`
+# startup via engine.main()) stripped +x from venv/bin/*, so the installed
+# CLI destroyed itself: `rhodawk status` ok, then the very next command
+# (`rhodawk doctor`) died with exit 126 (Permission denied). chmod also
+# followed symlinks like venv/bin/python3 -> /usr/bin/python3 and
+# re-permissioned their TARGETS.
+
+def _make_tighten_home(tmp_path):
+    """Build a ~/.rhodawk-shaped home: managed venv + secrets + symlink traps."""
+    home = tmp_path / "home"
+    rh = home / ".rhodawk"
+    venv_bin = rh / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    entrypoint = venv_bin / "rhodawk"
+    entrypoint.write_text("#!/bin/sh\necho stub\n")
+    entrypoint.chmod(0o755)
+    venv_lib_file = rh / "venv" / "lib" / "pkg.py"
+    venv_lib_file.parent.mkdir(parents=True)
+    venv_lib_file.write_text("# venv payload\n")
+    venv_lib_file.chmod(0o644)
+    # symlink traps: chmod must not follow links to their targets
+    py_target = tmp_path / "system-python3"
+    py_target.write_text("#!/bin/sh\necho py\n")
+    py_target.chmod(0o755)
+    (venv_bin / "python3").symlink_to(py_target)
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("data")
+    outside.chmod(0o644)
+    (rh / "linked.log").symlink_to(outside)
+    # sensitive data files that MUST still be tightened
+    (rh / "config.json").write_text("{}")
+    (rh / "config.json").chmod(0o644)
+    (rh / ".env").write_text("H1_API_TOKEN=secret")
+    (rh / ".env").chmod(0o644)
+    (rh / "notes.txt").write_text("recon notes")
+    (rh / "notes.txt").chmod(0o644)
+    return home, rh, entrypoint, py_target, outside
+
+
+def test_ensure_home_migrated_preserves_venv_and_skips_symlinks(tmp_path,
+                                                                monkeypatch):
+    """ensure_home_migrated() must keep venv/bin/* executable, never chmod
+    through symlinks, and still tighten config.json / .env to 0600."""
+    home, rh, entrypoint, py_target, outside = _make_tighten_home(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    _compat = importlib.import_module("_compat")
+
+    _compat.ensure_home_migrated()
+
+    # venv executable keeps its +x (this exact behavior self-destructed the CLI)
+    assert os.access(entrypoint, os.X_OK), \
+        "ensure_home_migrated stripped +x from venv/bin/rhodawk"
+    assert stat.S_IMODE(entrypoint.stat().st_mode) == 0o755
+    assert stat.S_IMODE((rh / "venv" / "lib" / "pkg.py").stat().st_mode) == 0o644
+    # symlinks are never chmod'ed through — their targets keep their modes
+    assert stat.S_IMODE(py_target.stat().st_mode) == 0o755
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+    assert (rh / "venv" / "bin" / "python3").is_symlink()
+    assert (rh / "linked.log").is_symlink()
+    # sensitive data files are still tightened
+    assert stat.S_IMODE((rh / "config.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((rh / ".env").stat().st_mode) == 0o600
+
+
+def test_back_to_back_cli_invocations_keep_venv_executable(tmp_path):
+    """A real `rhodawk status` followed back-to-back by `rhodawk doctor`
+    against a RHODAWK_HOME whose data home holds an executable
+    venv/bin/rhodawk must leave that entrypoint executable after BOTH runs
+    (the incident: run 1 ok, run 2 exit 126)."""
+    home, rh, entrypoint, _py_target, _outside = _make_tighten_home(tmp_path)
+    env = {**os.environ, "HOME": str(home), "RHODAWK_HOME": str(rh)}
+    env.pop("BRAIN_PROVIDER", None)
+
+    proc1 = subprocess.run(
+        [sys.executable, "-m", "rhodawk", "status"],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=180)
+    assert proc1.returncode == 0, proc1.stderr
+    assert os.access(entrypoint, os.X_OK), \
+        "venv entrypoint lost +x after `rhodawk status`"
+
+    proc2 = subprocess.run(
+        [sys.executable, "-m", "rhodawk", "doctor"],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=180)
+    assert proc2.returncode == 0, proc2.stderr
+    assert os.access(entrypoint, os.X_OK), \
+        "venv entrypoint lost +x after `rhodawk doctor`"
+    # tightening still did its job on the sensitive files
+    assert stat.S_IMODE((rh / "config.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((rh / ".env").stat().st_mode) == 0o600
+
+
+def test_install_sh_tightening_block_prunes_venv(tmp_path):
+    """Re-running install.sh's permission-tightening block must preserve +x
+    on venv/bin/* while still tightening $HOME/.rhodawk/config.json to 0600.
+    The REAL function is extracted from install.sh — no reimplementation."""
+    home, rh, entrypoint, _py_target, outside = _make_tighten_home(tmp_path)
+    src = open(os.path.join(REPO, "install.sh"), encoding="utf-8").read()
+    match = re.search(r"^tighten_rhodawk_home_perms\(\)\s*\{.*?^\}", src,
+                      re.S | re.M)
+    assert match, "tighten_rhodawk_home_perms() not found in install.sh"
+    script = match.group(0) + '\ntighten_rhodawk_home_perms "$1"\n'
+
+    proc = subprocess.run([BASH, "-c", script, "tighten", str(rh)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+
+    assert os.access(entrypoint, os.X_OK), \
+        "install.sh tightening stripped +x from venv/bin/rhodawk"
+    assert stat.S_IMODE(entrypoint.stat().st_mode) == 0o755
+    assert stat.S_IMODE((rh / "venv" / "lib" / "pkg.py").stat().st_mode) == 0o644
+    # non-venv data files are still tightened; symlink targets untouched
+    assert stat.S_IMODE((rh / "config.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((rh / ".env").stat().st_mode) == 0o600
+    assert stat.S_IMODE((rh / "notes.txt").stat().st_mode) == 0o600
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+    assert (rh / "linked.log").is_symlink()
