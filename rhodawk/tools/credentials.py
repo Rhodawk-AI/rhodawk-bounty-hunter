@@ -27,10 +27,12 @@ Keyless tools (zero credentials): h1scope, bounty-targets-data.
 4-tier auto-loader (load_credentials):
   1. Already-exported os.environ values (non-empty) win.
   2. Credential files, in priority order (permissions auto-tightened to
-     0o600; the vault directory to 0o700):
+     0o600; the vault directory to 0o700; earlier files win per variable —
+     a later file NEVER overwrites a key resolved from an earlier one):
        $RHODAWK_CREDENTIALS_FILE (if set)
        -> ~/.rhodawk/.env
-       -> /root/.secrets/h1_api (if readable)
+       -> /root/.secrets/h1_api (if readable; path overridable via
+          $RHODAWK_ROOT_SECRETS_FILE)
   3. Only non-empty values are exported into os.environ — blank `KEY=""`
      entries are ignored, so downstream tools treat them as unconfigured.
   4. interactive=True + TTY + no ~/.rhodawk/.env yet -> run the bootstrap
@@ -245,6 +247,19 @@ ROOT_SECRETS_FILE = Path("/root/.secrets/h1_api")
 H1_VERIFY_URL = "https://api.hackerone.com/v1/hackers/me/reports?page%5Bsize%5D=1"
 
 
+def legacy_root_secrets_file() -> Path:
+    """The legacy /root/.secrets/h1_api fallback path, overridable.
+
+    $RHODAWK_ROOT_SECRETS_FILE (when set) replaces the hard-coded host path.
+    This exists so test runners can point the legacy fallback at an isolated,
+    nonexistent location: running pytest on a production VPS must never read
+    or print the real host secrets. Production default is unchanged."""
+    override = get_env("RHODAWK_ROOT_SECRETS_FILE")
+    if override:
+        return Path(override).expanduser()
+    return ROOT_SECRETS_FILE
+
+
 # ── Paths / small helpers ─────────────────────────────────────────────────────
 
 def vault_dir() -> Path:
@@ -314,7 +329,7 @@ def candidate_files() -> list[Path]:
     if override:
         files.append(Path(override).expanduser())
     files.append(vault_env_file())
-    files.append(ROOT_SECRETS_FILE)
+    files.append(legacy_root_secrets_file())
     # De-dupe while preserving order (e.g. override == vault file).
     seen: set[str] = set()
     unique: list[Path] = []
@@ -366,7 +381,7 @@ def _resolve_all() -> tuple[dict[str, str], list[str]]:
             values[var] = current
 
     # Tier 2: credential files, first hit wins per variable.
-    root_secrets = ROOT_SECRETS_FILE
+    root_secrets = legacy_root_secrets_file()
     for path in candidate_files():
         try:
             if not path.is_file():
@@ -381,14 +396,23 @@ def _resolve_all() -> tuple[dict[str, str], list[str]]:
             if key in _LOOKUP_VARS and value and key not in values:
                 values[key] = value
         # /root/.secrets/h1_api legacy form: a single bare "user:token" line.
+        # NEVER fires once any H1_* value was already resolved (Tier 1 or an
+        # earlier, higher-priority file) — the vault's H1_TOKEN must not be
+        # displaced by host-level legacy secrets (v2.0.5 precedence fix).
         if (_same_path(path, root_secrets)
-                and not any(key.startswith("H1_") for key in parsed)):
+                and not any(key.startswith("H1_") for key in parsed)
+                and not any(key.startswith("H1_") for key in values)):
             raw = text.strip()
             if raw and "=" not in raw and "\n" not in raw and ":" in raw:
                 user, _, token = raw.partition(":")
                 if user and token:
                     values.setdefault("H1_USERNAME", user)
                     values.setdefault("H1_API_TOKEN", token)
+        # Derive the H1 pair immediately after each file so an EARLIER file's
+        # H1_TOKEN=user:token owns H1_USERNAME/H1_API_TOKEN before any later
+        # file (legacy fallback included) can fill them. _derive_h1_pair is
+        # first-win/idempotent, so repeated calls never overwrite.
+        _derive_h1_pair(values)
 
     _derive_h1_pair(values)
     return values, sources

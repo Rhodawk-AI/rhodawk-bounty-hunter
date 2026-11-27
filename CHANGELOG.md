@@ -3,6 +3,71 @@
 All notable changes to RhodawkAI Bounty Hunter are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: SemVer.
 
+## [2.0.5] — 2026-11-27
+
+Post-PR-#6 verification pass (fresh clone of `af8e88b`): ships PR #6's
+features, closes one fail-open security bug it left behind, and hardens
+test isolation so a production VPS / GPU host can never leak real host
+secrets or provider configs into pytest output.
+
+### Added (PR #6, merged in `af8e88b`, first released here)
+
+- Scope compilation for **Bugcrowd / Intigriti / YesWeHack** (keyless,
+  exact-match lookup in the bounty-targets-data dumps; full program URL
+  auto-detection, bare handles still compile as HackerOne).
+- Opt-in **headless JS crawl layer** (Phase 5.75, `--js-crawl`) so runtime
+  SPA `fetch()` endpoints reach `recon_truth.json`.
+- Internal fail-closed **scope gate for the spray modules**.
+- **Scanner subprocess environments** no longer receive vault secrets.
+- `doctor` treats a missing reconFTW checkout as **WARN, not FAIL**.
+
+### Fixed
+
+- **SECURITY — PreToolUse hook: fail-open curl/wget scope gate on a
+  tampered or unverifiable manifest** (`rhodawk/tools/hook_scope_guard.py`).
+  When a manifest resolved but `verify_manifest()` returned `(False, err)`,
+  execution fell through `if ok:` (no else) and `if ScopeChecker is not
+  None:` (no else) straight to `return 0` — ALLOW with the scope gate
+  silently disabled. Both paths now fail closed (exit 2 +
+  `SCOPE_HOOK_BLOCK` on stderr): a manifest that fails verification blocks
+  the fetch, and an unavailable scope checker blocks the fetch. The
+  manifest-less behavior (no resolvable manifest ⇒ allow) is unchanged.
+  The masked test (`assert proc.returncode in (0, 2)`) is replaced with
+  strict fail-closed assertions, plus a new regression test proving a
+  verified manifest with an unavailable ScopeChecker still blocks.
+- **credentials: the legacy `/root/.secrets/h1_api` fallback could displace
+  the managed vault's `H1_TOKEN`** (`rhodawk/tools/credentials.py`). The
+  legacy bare `user:token` branch used `setdefault` while vault
+  `H1_TOKEN=user:token` was only derived after ALL files were read, so on a
+  VPS the host file's credentials won the pair and leaked over
+  `$RHODAWK_HOME/.env` in test diffs. The pair is now derived immediately
+  after each file (earlier files win per variable), and the legacy branch
+  never fires once any `H1_*` value is already resolved. The legacy path
+  is overridable via `$RHODAWK_ROOT_SECRETS_FILE`; the shared conftest
+  points it at an isolated nonexistent path for every test (in-process and
+  subprocess), so pytest can never read the real host file. New precedence
+  tests cover both the bare-line and env-style legacy forms.
+- **tests: host NVIDIA config leaked into the LiteLLM auto-detect test**
+  (`tests/test_brain_litellm.py`). The `brain_module` fixture now clears
+  every key in `LLMClient.PROVIDER_KEY_ENV` plus `NVIDIA_NIM_BASE_URL`,
+  `LITELLM_API_BASE`, `LITELLM_BASE_URL`, `BRAIN_PROVIDER`, `BRAIN_MODEL`
+  and `OLLAMA_HOST`, and pins `HOME`/`RHODAWK_HOME` to tmp_path so the
+  host's `~/.rhodawk/config.json` and `~/.rhodawk/.env` cannot leak either.
+- **CLI help drift:** `rhodawk scope-compile --help` and
+  `python3 -m rhodawk.tools.scope_compiler --help` still described the
+  command as HackerOne-only after PR #6. Both now document all four
+  platforms and the URL auto-detection contract; a regression test asserts
+  Bugcrowd, Intigriti and YesWeHack appear in both help outputs.
+- **recon summary stderr on missing files** (`rhodawk/tools/recon_engine.sh`).
+  The summary's optional-file counters used `wc -l < file 2>/dev/null ||
+  echo 0`, which still leaked `No such file or directory` to stderr —
+  redirections apply left-to-right, so the failed `< file` redirect prints
+  before `2>/dev/null` is in effect. The summary's `Subdomains` /
+  `Live hosts` / `URLs collected` lines and all `live/urls.txt` counting
+  sites now apply `2>/dev/null` BEFORE the input redirect: missing files
+  count as 0 with zero stderr noise (regression tests execute the exact
+  summary lines against a nonexistent recon directory).
+
 ## [2.0.4] — 2026-11-26
 
 Live-sandbox fixes: three bugs observed running v2.0.3 in a fresh sandbox.

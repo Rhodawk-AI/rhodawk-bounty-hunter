@@ -46,6 +46,11 @@ def vault_home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(credentials, "ROOT_SECRETS_FILE",
                         tmp_path / "root-secrets" / "h1_api")
+    # Keep the env override (set by the conftest autouse fixture) pointed at
+    # the same isolated path — the env var wins in
+    # credentials.legacy_root_secrets_file(), so this fixture must re-point it.
+    monkeypatch.setenv("RHODAWK_ROOT_SECRETS_FILE",
+                       str(tmp_path / "root-secrets" / "h1_api"))
     return tmp_path
 
 
@@ -284,6 +289,47 @@ class TestLoader:
         credentials.load_credentials()
         assert os.environ["H1_USERNAME"] == "envuser"
         assert os.environ["H1_API_TOKEN"] == "envtoken"
+
+    def test_vault_h1_token_precedence_over_legacy_bare_line(
+            self, vault_home, monkeypatch):
+        """Regression (v2.0.5 Issue #3): H1_TOKEN=user:token in the managed
+        vault (~/.rhodawk/.env) must take STRICT precedence over the legacy
+        /root/.secrets/h1_api fallback. A populated legacy file must never
+        inject H1_USERNAME/H1_API_TOKEN once the vault already resolved
+        H1_TOKEN — on a production VPS those are LIVE host credentials that
+        leaked into pytest assertion diffs before the fix."""
+        _write_vault(vault_home, 'H1_TOKEN="vaultuser:vault-token-123"\n')
+        root_file = vault_home / "root-secrets" / "h1_api"
+        root_file.parent.mkdir(parents=True)
+        root_file.write_text("hostuser:host-LEAK-token\n")
+
+        values, sources = credentials._resolve_all()
+
+        assert values.get("H1_USERNAME") == "vaultuser"
+        assert values.get("H1_API_TOKEN") == "vault-token-123"
+        assert "hostuser" not in values.values()
+        assert "host-LEAK-token" not in values.values()
+        # strict priority order: the vault file is read (and wins) first
+        assert sources == [str(vault_home / ".rhodawk" / ".env"),
+                           str(root_file)]
+
+    def test_vault_h1_token_precedence_over_legacy_env_style(
+            self, vault_home, monkeypatch):
+        """Regression (v2.0.5 Issue #3): even an env-style legacy file with
+        explicit H1_USERNAME/H1_API_TOKEN entries must not displace the pair
+        derived from the vault's H1_TOKEN (earlier files win per variable)."""
+        _write_vault(vault_home, 'H1_TOKEN="vaultuser:vault-token-123"\n')
+        root_file = vault_home / "root-secrets" / "h1_api"
+        root_file.parent.mkdir(parents=True)
+        root_file.write_text('H1_USERNAME="hostuser"\n'
+                             'H1_API_TOKEN="host-LEAK-token"\n')
+
+        values, _sources = credentials._resolve_all()
+
+        assert values.get("H1_USERNAME") == "vaultuser"
+        assert values.get("H1_API_TOKEN") == "vault-token-123"
+        assert "hostuser" not in values.values()
+        assert "host-LEAK-token" not in values.values()
 
     def test_loader_tightens_loose_vault_perms(self, vault_home):
         env_file = _write_vault(vault_home, 'H1_USERNAME="u"\nH1_API_TOKEN="t"\n')
