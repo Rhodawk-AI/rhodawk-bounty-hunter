@@ -19,6 +19,11 @@ Examples:
   ./uninstall.sh --agent all --yes
   ./uninstall.sh --agent standalone --purge-config
 
+Standalone uninstall removes the rhodawk AND rhodawk-agent commands plus the
+rhodawk-managed venv (~/.rhodawk/venv, marker-guarded). ~/.rhodawk/.env,
+config.json and all recon/findings/report data are preserved unless
+--purge-config is supplied (which still only removes config.json).
+
 Options:
   --global          Remove global installation (default)
   --project         Remove project-local installation
@@ -178,10 +183,29 @@ uninstall_antigravity() {
     remove_path "$root/rules/reporting.md" "Antigravity rule"
 }
 
+rhodawk_venv_dir() {
+    echo "${RHODAWK_HOME:-$HOME/.rhodawk}/venv"
+}
+
 is_managed_bughunter() {
-    local path="$1"
+    local path="$1" link realpath_target venv_dir
+    venv_dir="$(rhodawk_venv_dir)"
     if [ -L "$path" ]; then
-        [ "$(basename "$(readlink "$path")")" = "engine.py" ]
+        link="$(readlink "$path")"
+        if [ "$(basename "$link")" = "engine.py" ]; then
+            return 0
+        fi
+        # v2.0.5: standalone venv installs symlink to the venv console scripts
+        # (.../venv/bin/rhodawk) — ours too, including dangling links whose
+        # target already vanished (so check the link string, not just realpath).
+        case "$link" in
+            "$venv_dir"/*) return 0 ;;
+        esac
+        realpath_target="$(realpath "$path" 2>/dev/null || echo "")"
+        case "$realpath_target" in
+            "$venv_dir"/*) return 0 ;;
+        esac
+        return 1
     elif [ -f "$path" ]; then
         grep -q "Standalone RhodawkAI Bounty Hunter CLI" "$path" 2>/dev/null
     else
@@ -221,11 +245,15 @@ uninstall_standalone() {
     if [ -n "${RHODAWK_BIN_DIR:-}" ]; then
         # Explicit override is intentionally exclusive, which also makes
         # packaging/integration tests unable to touch a real installation.
-        candidates+=("$RHODAWK_BIN_DIR/rhodawk")
+        candidates+=("$RHODAWK_BIN_DIR/rhodawk" "$RHODAWK_BIN_DIR/rhodawk-agent")
     else
         active="$(command -v rhodawk 2>/dev/null || true)"
         [ -n "$active" ] && candidates+=("$active")
         candidates+=("/usr/local/bin/rhodawk" "$HOME/.local/bin/rhodawk")
+        # v2.0.5: the agent entrypoint is now installed alongside rhodawk.
+        active="$(command -v rhodawk-agent 2>/dev/null || true)"
+        [ -n "$active" ] && candidates+=("$active")
+        candidates+=("/usr/local/bin/rhodawk-agent" "$HOME/.local/bin/rhodawk-agent")
     fi
 
     for candidate in "${candidates[@]}"; do
@@ -236,6 +264,18 @@ uninstall_standalone() {
         seen_standalone_paths="${seen_standalone_paths:-} $candidate"
         remove_standalone_path "$candidate"
     done
+
+    # ── Standalone venv cleanup (installed by install.sh --agent standalone) ──
+    # Removes ONLY a rhodawk-managed venv (marker-guarded). ~/.rhodawk/.env,
+    # config.json and all recon/findings/report data are never touched here.
+    local venv_dir
+    venv_dir="$(rhodawk_venv_dir)"
+    if [ -f "$venv_dir/.rhodawk-managed-venv" ]; then
+        remove_path "$venv_dir" "standalone venv"
+        echo "  (user data preserved: ~/.rhodawk/.env, config.json, recon/, findings/, reports/)"
+    elif [ -d "$venv_dir" ]; then
+        echo "! $venv_dir has no rhodawk-managed marker — left in place"
+    fi
 }
 
 case "$AGENT" in

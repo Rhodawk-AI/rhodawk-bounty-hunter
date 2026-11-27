@@ -101,3 +101,97 @@ def test_guarded_expansion_still_passes_a_non_empty_prefix():
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "marker"
+
+
+# ── Layer 1A (v2.0.5): both entrypoints, once each; UX ordering ───────────────
+
+def test_standalone_install_links_both_entrypoints_exactly_once(tmp_path):
+    """The old script linked rhodawk twice (engine symlink + 'brand alias')
+    and printed the same '[+] Installed: .../rhodawk -> .../engine.py' line
+    two times — while rhodawk-agent was never installed at all."""
+    bin_dir = tmp_path / "bin"
+    proc = _run("install.sh", ["--agent", "standalone"], bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert (bin_dir / "rhodawk").is_symlink()
+    assert (bin_dir / "rhodawk-agent").is_symlink()
+    assert os.path.realpath(bin_dir / "rhodawk-agent") == \
+        os.path.realpath(os.path.join(REPO, "rhodawk", "agent.py"))
+    engine_log = [ln for ln in proc.stdout.splitlines()
+                  if ln.startswith("[+]") and ln.rstrip().endswith("engine.py")]
+    assert len(engine_log) == 1, proc.stdout
+
+
+def test_install_sh_source_single_links_and_ux_ordering():
+    """Static layout pins: no duplicate symlink block, reconFTW setup before
+    the final Done! banner, one banner only, and no raw capability JSON dump."""
+    src = open(os.path.join(REPO, "install.sh"), encoding="utf-8").read()
+    # the legacy duplicate-link block is gone
+    assert "brand alias" not in src
+    # rhodawk-agent is installed in every mode
+    assert "rhodawk-agent" in src
+    # the capability-registry rebuild runs BEFORE the final Done! banner
+    # (rindex = the actual call after the function definition)
+    assert src.rindex("install_rtw_capability_delegation") < \
+        src.index("Done! Type from anywhere:")
+    assert src.count("Done! Type from anywhere:") == 1
+    # one-line summary instead of the raw JSON state dump (--rebuild --banner
+    # printed a 9-line JSON dict on non-TTY installs)
+    assert "--banner" not in src
+    assert "--summary" in src
+
+
+def test_uninstall_removes_both_entrypoints_and_managed_venv(tmp_path):
+    """Standalone uninstall removes rhodawk AND rhodawk-agent, plus the venv
+    only when it carries the rhodawk-managed marker — never user data."""
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    venv_dir = home / "rhodawk-home" / "venv"
+    (venv_dir / "bin").mkdir(parents=True)
+    (venv_dir / ".rhodawk-managed-venv").touch()
+    # simulate what install.sh creates in venv mode (dangling links included:
+    # no real console scripts behind them)
+    (bin_dir).mkdir()
+    os.symlink(str(venv_dir / "bin" / "rhodawk"), str(bin_dir / "rhodawk"))
+    os.symlink(str(venv_dir / "bin" / "rhodawk-agent"),
+               str(bin_dir / "rhodawk-agent"))
+    # user data that must survive the uninstall
+    (home / "rhodawk-home" / ".env").write_text("H1_API_TOKEN=secret")
+    (home / "rhodawk-home" / "recon").mkdir()
+
+    env = {**os.environ, "RHODAWK_BIN_DIR": str(bin_dir),
+           "RHODAWK_HOME": str(home / "rhodawk-home"),
+           "RHODAWK_SKIP_DEPS": "1"}
+    proc = subprocess.run([BASH, os.path.join(REPO, "uninstall.sh"),
+                           "--agent", "standalone", "--yes"],
+                          cwd=REPO, env=env, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert not (bin_dir / "rhodawk").exists()
+    assert not (bin_dir / "rhodawk-agent").exists()
+    assert not venv_dir.exists()
+    # user data preserved
+    assert (home / "rhodawk-home" / ".env").exists()
+    assert (home / "rhodawk-home" / "recon").exists()
+    assert "standalone venv" in proc.stdout
+
+
+def test_uninstall_preserves_unmarked_venv(tmp_path):
+    """A venv without the rhodawk-managed marker is never deleted."""
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    venv_dir = home / "rhodawk-home" / "venv"
+    (venv_dir / "bin").mkdir(parents=True)
+    (bin_dir).mkdir()
+    os.symlink(str(venv_dir / "bin" / "rhodawk"), str(bin_dir / "rhodawk"))
+
+    env = {**os.environ, "RHODAWK_BIN_DIR": str(bin_dir),
+           "RHODAWK_HOME": str(home / "rhodawk-home"),
+           "RHODAWK_SKIP_DEPS": "1"}
+    proc = subprocess.run([BASH, os.path.join(REPO, "uninstall.sh"),
+                           "--agent", "standalone", "--yes"],
+                          cwd=REPO, env=env, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert not (bin_dir / "rhodawk").exists()
+    assert venv_dir.exists()
+    assert "no rhodawk-managed marker" in proc.stdout
