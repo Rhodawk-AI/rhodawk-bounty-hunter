@@ -146,6 +146,71 @@ _MANIFEST_IN_COMMAND_RE = re.compile(
 CURL_WGET_RE = re.compile(r"\b(?:curl|wget)\b")
 _HTTP_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 
+# ── Layer 1B Issue #5 (SECURITY): direct active-scanner invocations ───────
+# Live defect: `nuclei -u https://example.com` in a Bash tool call classified
+# as "readonly" and exited 0 (ALLOW) with ZERO scope manifest present — the
+# PreToolUse gate was trivially bypassed by calling the bundled scanners
+# directly instead of through the rhodawk engine.
+ACTIVE_SCANNER_BINARIES = frozenset((
+    "nuclei", "ffuf", "nmap", "masscan", "naabu", "httpx", "katana",
+    "subfinder", "amass", "gau", "waybackurls", "dnsx", "sqlmap", "dalfox",
+    "nikto", "gobuster", "feroxbuster", "dirsearch", "wfuzz", "hydra",
+    "wpscan", "interactsh-client", "arjun", "kiterunner", "kr",
+))
+
+# A scanner counts as INVOKED when its name sits in command position: at the
+# start of the command, after a shell separator/opener (newline, ;, |, &,
+# $(, backtick, (, {, quotes), or after a wrapper (sudo/env/timeout/... incl.
+# their short flags) plus env assignments. A path prefix (/usr/bin/nmap,
+# ~/.go/bin/nuclei) still counts. "echo nuclei", `command -v nuclei`,
+# `which nuclei`, wordlist names (nuclei-templates) do NOT match: the name is
+# a plain argument there (no separator/wrapper before it).
+_SCANNER_NAME_ALT = "|".join(
+    sorted(ACTIVE_SCANNER_BINARIES, key=len, reverse=True))
+_SCANNER_WRAPPER = (
+    r"(?:\w+=\S+"
+    r"|sudo(?:\s+-\w+)*"
+    r"|nohup|nice(?:\s+-n\s*\d+)?|time|env|command|stdbuf|flock|watch|xargs"
+    r"|timeout(?:\s+\d+\S*)?)"
+)
+_SCANNER_INVOCATION_RE = re.compile(
+    r"(?:^|[\n;|&]|\$\(|`|\(|\{|['\"])\s*"
+    r"(?:" + _SCANNER_WRAPPER + r"\s+)*"
+    r"(?:[~\w./+-]*/)?"
+    r"(" + _SCANNER_NAME_ALT + r")"
+    r"(?![\w.-])"
+    # Benign version/help/existence probes are NOT active scans: when the
+    # FIRST argument after the binary is exactly a version/help flag
+    # (nuclei -version, nmap --version, ffuf -h, sqlmap --help ...) the call
+    # is a probe. A real scan never starts with one of these tokens.
+    r"(?:\s+(-{1,2}(?:version|h|help|V)|version|help)(?![\w-]))?"
+)
+
+# Explicit target arguments of scanner invocations (Layer 1B Issue #5):
+# -u/-url/-target/-d/-domain/-host values, checked against the verified
+# manifest in addition to every http(s) URL in the command. Bare -t/-h are
+# deliberately NOT consumed here (-t is threads in ffuf, -h is help in most
+# tools); a bare-host value gets an https:// scheme prepended for the check.
+_SCANNER_TARGET_FLAG_RE = re.compile(
+    r"(?:^|[\s;|&])-(?:u|url|target|d|domain|host)\s+"
+    r"(\"[^\"]+\"|'[^']+'|[^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def scanner_invocation(command: str) -> str | None:
+    """Return the scanner binary name when `command` really invokes one.
+
+    Version/help/existence probes (nuclei -version, which nuclei,
+    command -v ffuf, nmap --help) return None — they must never trip the
+    fail-closed gate. Real invocations (nuclei -u https://example.com,
+    ffuf -u https://target.com/FUZZ -w list.txt) return the binary name.
+    """
+    match = _SCANNER_INVOCATION_RE.search(command or "")
+    if not match or match.group(2):
+        return None  # no scanner in command position, or a benign probe
+    return match.group(1)
+
 
 def classify(tool_name: str, tool_input: dict) -> str:
     """Return 'active' when the tool call drives target-side network work."""
@@ -161,6 +226,12 @@ def classify(tool_name: str, tool_input: dict) -> str:
             if any(sub in command for sub in ACTIVE_COMMAND_SUBSTRINGS):
                 return "active"
             if ACTIVE_CLI_RE.search(command):
+                return "active"
+            # Layer 1B Issue #5: a direct scanner invocation (nuclei, ffuf,
+            # nmap, ...) IS active work. Version/help/existence probes
+            # (nuclei -version, which nuclei) are NOT — scanner_invocation
+            # returns None for them so they stay read-only.
+            if scanner_invocation(command):
                 return "active"
             if CURL_WGET_RE.search(command):
                 # Fix 2: bare curl/wget IS network work. Classified as
@@ -334,6 +405,34 @@ def _out_of_scope_fetch_urls(command: str, checker) -> list:
     return hosts_out
 
 
+def _out_of_scope_scanner_targets(command: str, checker) -> list:
+    """Layer 1B Issue #5: explicit targets of a direct scanner invocation
+    that the verified manifest does NOT cover — every http(s) URL in the
+    command plus the values of -u/-url/-target/-d/-domain/-host. Bare-host
+    values get an https:// scheme prepended for the scope check."""
+    hosts_out = []
+    checked = set()
+
+    def _check(raw: str) -> None:
+        raw = _strip_quotes(raw)
+        if not raw or raw in checked:
+            return
+        checked.add(raw)
+        try:
+            if not checker.is_in_scope(raw):
+                parsed = urlparse(
+                    raw if "://" in raw else "https://" + raw)
+                hosts_out.append(parsed.netloc or raw)
+        except Exception:  # noqa: BLE001 — uncheckable target: fail-closed
+            hosts_out.append(raw)
+
+    for url in _HTTP_URL_RE.findall(command or ""):
+        _check(url)
+    for flag_value in _SCANNER_TARGET_FLAG_RE.findall(command or ""):
+        _check(flag_value)
+    return hosts_out
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
@@ -448,6 +547,34 @@ def main(argv=None) -> int:
         print(f"{BLOCK_PREFIX}: active recon/hunt tool '{tool_name}' denied "
               f"(manifest source: {source}). {error}", file=sys.stderr)
         return 2
+
+    # Layer 1B Issue #5: even with a VERIFIED manifest, the explicit
+    # URL/host targets of a direct scanner invocation must be inside the
+    # verified scope — otherwise `nuclei -u https://evil-oos.com` runs
+    # unblocked on any machine that happens to hold one valid manifest.
+    scanner_bin = scanner_invocation(command) if command else None
+    if scanner_bin:
+        ScopeChecker = _load_scope_checker()
+        if ScopeChecker is None:
+            print(f"{BLOCK_PREFIX}: scanner '{scanner_bin}' denied — scope "
+                  f"checker unavailable (fail-closed) (source: {source})",
+                  file=sys.stderr)
+            return 2
+        try:
+            checker = ScopeChecker.from_manifest(str(path))
+        except ValueError as exc:  # tampered manifest
+            print(f"{BLOCK_PREFIX}: scanner '{scanner_bin}' denied — manifest "
+                  f"failed integrity verification ({exc}) "
+                  f"(source: {source})", file=sys.stderr)
+            return 2
+        oos = _out_of_scope_scanner_targets(command, checker)
+        if oos:
+            print(f"{BLOCK_PREFIX}: scanner '{scanner_bin}' target(s) outside "
+                  f"the verified scope manifest (source: {source}): "
+                  f"{', '.join(sorted(set(oos)))}. Re-run "
+                  f"`rhodawk scope-compile <handle>` if the program scope "
+                  f"changed.", file=sys.stderr)
+            return 2
 
     return 0  # verified manifest intact -- allow
 

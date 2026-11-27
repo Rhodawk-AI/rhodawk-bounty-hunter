@@ -119,3 +119,69 @@ def test_mcp_tool_names_still_classified_active(tmp_path):
     manifest = _manifest(tmp_path, ["127.0.0.1"])
     proc = _run_hook("do work", manifest=manifest, tool="mcp__rhodawk-mcp__rhodawk_recon")
     assert proc.returncode == 0  # manifest resolves + verifies → allow
+
+
+# ── Layer 1B Issue #5 (SECURITY): direct active-scanner invocations ──────────
+# Live defect: `nuclei -u https://example.com` classified readonly → exit 0
+# (ALLOW) with zero scope manifest present. Direct scanner invocations must
+# run the SAME fail-closed gate as the engine: no manifest → block, tampered
+# manifest → block, valid manifest → explicit URL/host targets checked.
+
+@pytest.mark.parametrize("cmd", [
+    "nuclei -u https://example.com",
+    "sudo -E env FOO=1 nuclei -u https://example.com",
+    'bash -c "nuclei -u https://example.com"',
+    "./nuclei -u https://example.com",
+    "ffuf -u https://example.com/FUZZ -w /tmp/words.txt",
+    "timeout 60 httpx -u https://example.com",
+])
+def test_scanner_invocation_no_manifest_blocked(cmd):
+    proc = _run_hook(cmd, manifest=None)
+    assert proc.returncode == 2, \
+        f"expected SCOPE_HOOK_BLOCK, got {proc.returncode}: {proc.stderr[-300:]}"
+    assert "SCOPE_HOOK_BLOCK" in proc.stderr
+
+
+@pytest.mark.parametrize("cmd", [
+    "nuclei -version",
+    "nuclei --version",
+    "which nuclei",
+    "command -v ffuf",
+    "nmap --help",
+    "timeout 60 httpx -version",
+])
+def test_scanner_benign_probes_not_blocked(cmd):
+    """Version/help/existence probes must NOT trip the fail-closed gate."""
+    proc = _run_hook(cmd, manifest=None)
+    assert proc.returncode == 0, \
+        f"benign probe blocked: {cmd}: {proc.stderr[-200:]}"
+
+
+def test_scanner_oos_target_blocked_with_valid_manifest(tmp_path):
+    """A direct scanner with an out-of-scope -u target is blocked EVEN when a
+    valid manifest for a different program is present (Issue #5)."""
+    manifest = _manifest(tmp_path, ["127.0.0.1", "*.target-scope.test"])
+    proc = _run_hook("ffuf -u https://evil.com/FUZZ -w /tmp/words.txt",
+                     manifest=manifest)
+    assert proc.returncode == 2
+    assert "SCOPE_HOOK_BLOCK" in proc.stderr
+    assert "outside the verified scope manifest" in proc.stderr
+    assert "evil.com" in proc.stderr
+
+
+def test_scanner_oos_bare_host_flag_blocked(tmp_path):
+    """A bare-host (no scheme) -u value is scope-checked too."""
+    manifest = _manifest(tmp_path, ["*.target-scope.test"])
+    proc = _run_hook("nuclei -u not-in-scope.example", manifest=manifest)
+    assert proc.returncode == 2
+    assert "outside the verified scope manifest" in proc.stderr
+
+
+def test_scanner_in_scope_allowed_with_valid_manifest(tmp_path):
+    """In-scope scanner targets pass: verified manifest *.target-scope.test
+    and nuclei -u https://app.target-scope.test/x → exit 0."""
+    manifest = _manifest(tmp_path, ["127.0.0.1", "*.target-scope.test"])
+    proc = _run_hook(
+        "nuclei -u https://app.target-scope.test/x -severity medium",
+        manifest=manifest)
+    assert proc.returncode == 0, proc.stderr[-300:]

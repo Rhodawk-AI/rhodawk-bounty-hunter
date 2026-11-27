@@ -65,7 +65,10 @@ def test_agents_install_when_run_from_unrelated_cwd(tmp_path):
     proc = run_install(["--agent", "opencode"], cwd=tmp_path, env={"OPENCODE_CONFIG_DIR": str(cfg)})
 
     assert proc.returncode == 0, proc.stderr
-    expected = sorted(p.name for p in AGENTS_SRC.glob("*.md"))
+    # Layer 1B Issue #2: README.md is repo documentation, not a sub-agent —
+    # copy_files skips it, so the expected set excludes it too.
+    expected = sorted(p.name for p in AGENTS_SRC.glob("*.md")
+                      if p.name.lower() != "readme.md")
     assert expected, "no agent .md files found in the source tree"
     installed = sorted(p.name for p in (cfg / "agents").glob("*.md"))
     assert installed == expected, f"agents mismatch: {installed} != {expected}"
@@ -78,7 +81,10 @@ def test_skills_and_commands_install_from_unrelated_cwd(tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     assert len(list((cfg / "skills").iterdir())) == len(list((REPO / "skills").iterdir()))
-    assert len(list((cfg / "commands").glob("*.md"))) == len(list((REPO / "commands").glob("*.md")))
+    # Layer 1B Issue #2: commands/README.md must NOT be installed as a command.
+    src_cmds = [p for p in (REPO / "commands").glob("*.md")
+                if p.name.lower() != "readme.md"]
+    assert len(list((cfg / "commands").glob("*.md"))) == len(src_cmds)
 
 
 def test_install_is_idempotent(tmp_path):
@@ -90,7 +96,9 @@ def test_install_is_idempotent(tmp_path):
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    expected = sorted(p.name for p in AGENTS_SRC.glob("*.md"))
+    # Layer 1B Issue #2: README.md is skipped by copy_files (case-insensitive).
+    expected = sorted(p.name for p in AGENTS_SRC.glob("*.md")
+                      if p.name.lower() != "readme.md")
     assert sorted(p.name for p in (cfg / "agents").glob("*.md")) == expected
 
 

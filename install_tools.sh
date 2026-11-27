@@ -1,12 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# Bug Bounty Tool Installer
-# Installs all required tools via Homebrew and Go
+# RhodawkAI Bounty Hunter Tool Installer
+# Installs all required tools via Homebrew (macOS) or apt-get/go/uv/pipx
+# (Linux — Homebrew is never auto-downloaded there; Layer 1B Issue #6)
 # Usage: ./install_tools.sh [--with-cicd-scanner] [--with-credential-attack]
-#                           [--rtw-deps]
+#                           [--rtw-deps] [--browser] [-h|--help]
 #   --rtw-deps: install ONLY the reconFTW gap-fill backing binaries (pinned
 #               go-install, per capability). Never runs reconFTW's own
 #               installer (~70 unrelated binaries) and never brew-floats.
+#   --browser:  install ONE managed Chromium under ~/.rhodawk/browser/ and
+#               record its path in capabilities.json.
+#   -h|--help:  print usage and exit 0 BEFORE any banner or package manager.
 # =============================================================================
 
 set -euo pipefail
@@ -15,12 +19,51 @@ INSTALL_CICD_SCANNER=false
 INSTALL_CREDENTIAL_ATTACK=false
 INSTALL_RTW_DEPS=false
 INSTALL_BROWSER=false
+usage() {
+    cat <<'EOF'
+RhodawkAI Bounty Hunter Tool Installer
+
+Usage: ./install_tools.sh [flags]
+
+Flags:
+  --rtw-deps                 Install ONLY the reconFTW gap-fill backing
+                             binaries (pinned go-install, per capability).
+                             Never runs reconFTW's own installer, never
+                             touches Homebrew.
+  --browser                  Install ONE managed Chromium under
+                             ~/.rhodawk/browser/ and record it in
+                             capabilities.json ("chromium_path").
+  --with-cicd-scanner        Also install the cicd_scanner wrapper
+                             (sisakulint-based GitHub Actions SAST).
+  --with-credential-attack   Also install credential-attack tools
+                             (hashcat, theHarvester, cewler, cupp,
+                             trevorspray, kerbrute, CrossLinked, ...).
+  -h, --help                 Show this help and exit 0 (no banner, no
+                             package-manager or network action).
+
+On Linux this installer never auto-downloads Homebrew (it breaks when run
+as root and is unnecessary for --rtw-deps / --browser); without brew it
+falls back to apt-get / go install / uv / pipx with manual hints.
+EOF
+}
 for arg in "$@"; do
     case "$arg" in
         --with-cicd-scanner) INSTALL_CICD_SCANNER=true ;;
         --with-credential-attack) INSTALL_CREDENTIAL_ATTACK=true ;;
         --rtw-deps) INSTALL_RTW_DEPS=true ;;
         --browser) INSTALL_BROWSER=true ;;
+        # Layer 1B Issue #6: --help was silently ignored and the script went
+        # straight into a root Linuxbrew download on Ubuntu 24.04. Handle
+        # help/unknown flags HERE, before the banner and every installer.
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $arg" >&2
+            usage >&2
+            exit 2
+            ;;
     esac
 done
 
@@ -34,7 +77,7 @@ log_err()  { echo -e "${RED}[-]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 
 echo "============================================="
-echo "  Bug Bounty Tool Installer"
+echo "  RhodawkAI Bounty Hunter Tool Installer"
 echo "============================================="
 
 # ── Single managed Chromium (Step 3, --browser) ───────────────────────────────
@@ -180,16 +223,41 @@ if [ "$INSTALL_RTW_DEPS" = "true" ]; then
     exit 0
 fi
 
-# Check for Homebrew
+# ── Homebrew: only macOS auto-installs it (Layer 1B Issue #6) ────────────────
+# The old code piped the Homebrew install script into bash on ANY OS — on
+# Ubuntu 24.04 as root that downloaded/built Linuxbrew under /home/linuxbrew
+# and broke (Homebrew explicitly rejects root on Linux). --rtw-deps and
+# --browser never needed it at all (they exit above, before this block).
+# Linux without brew now falls back cleanly to apt-get / go install / uv /
+# pipx below; a non-fatal warning carries the manual steps.
 if ! command -v brew &>/dev/null; then
-    log_warn "Homebrew not found. Installing..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if [ "$(uname -s)" = "Linux" ]; then
+        if [ "$(id -u)" = "0" ]; then
+            log_warn "Homebrew cannot be used on Linux when running as root — skipping the Homebrew bootstrap."
+        else
+            log_warn "Homebrew not found on Linux — skipping the Homebrew bootstrap."
+        fi
+        log_warn "Falling back to apt-get / go install / uv / pipx for the remaining tools."
+        log_warn "To use Homebrew on Linux anyway (non-root account): https://docs.brew.sh/Installation — then re-run."
+    else
+        log_warn "Homebrew not found. Installing (macOS)..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
 fi
 
 # Check for Go (needed for some tools)
 if ! command -v go &>/dev/null; then
-    log_warn "Go not found. Installing via Homebrew..."
-    brew install go
+    if command -v brew &>/dev/null; then
+        log_warn "Go not found. Installing via Homebrew..."
+        brew install go
+    else
+        log_err "go is required for several tools but was not found on PATH."
+        log_err "Install it WITHOUT Homebrew, e.g.:"
+        log_err "  Debian/Ubuntu:  sudo apt-get install -y golang-go"
+        log_err "  Fedora/RHEL:    sudo dnf install -y golang"
+        log_err "  Arch:           sudo pacman -S go"
+        log_err "Continuing — go-installed tools are skipped below with manual hints."
+    fi
 fi
 
 # Ensure Go bin is in PATH early so go install binaries are visible
@@ -213,19 +281,73 @@ BREW_TOOLS=(
 )
 
 echo ""
-echo "[*] Installing tools via Homebrew..."
-for tool in "${BREW_TOOLS[@]}"; do
-    if command -v "$tool" &>/dev/null; then
-        log_ok "$tool already installed ($(command -v "$tool"))"
-    else
-        echo "    Installing $tool..."
-        if brew install "$tool" 2>/dev/null; then
-            log_ok "$tool installed successfully"
+if command -v brew &>/dev/null; then
+    echo "[*] Installing tools via Homebrew..."
+    for tool in "${BREW_TOOLS[@]}"; do
+        if command -v "$tool" &>/dev/null; then
+            log_ok "$tool already installed ($(command -v "$tool"))"
         else
-            log_err "$tool failed to install via brew, trying alternative..."
+            echo "    Installing $tool..."
+            if brew install "$tool" 2>/dev/null; then
+                log_ok "$tool installed successfully"
+            else
+                log_err "$tool failed to install via brew, trying alternative..."
+            fi
         fi
+    done
+else
+    # Layer 1B Issue #6: no brew on Linux — apt-get for nmap, pinned-path
+    # go installs for the rest (the PINNED per-capability installs live in
+    # --rtw-deps via tools/capability_registry.py; this fallback is the
+    # convenience path and tracks upstream @latest).
+    echo "[*] Installing tools via apt-get / go install (no Homebrew)..."
+    if command -v apt-get &>/dev/null; then
+        if [ "$(id -u)" = "0" ]; then
+            APT_PREFIX=(apt-get)
+        elif command -v sudo &>/dev/null; then
+            APT_PREFIX=(sudo apt-get)
+        else
+            APT_PREFIX=()
+        fi
+        if [ ${#APT_PREFIX[@]} -gt 0 ]; then
+            if command -v nmap &>/dev/null; then
+                log_ok "nmap already installed ($(command -v nmap))"
+            elif ${APT_PREFIX[@]+"${APT_PREFIX[@]}"} install -y nmap 2>/dev/null; then
+                log_ok "nmap installed via apt-get"
+            else
+                log_warn "nmap apt-get install failed — install manually: sudo apt-get install -y nmap"
+            fi
+        else
+            log_warn "not root and no sudo — install nmap manually: sudo apt-get install -y nmap"
+        fi
+    else
+        log_warn "apt-get not found — install nmap manually (https://nmap.org/download.html)"
     fi
-done
+    if command -v go &>/dev/null; then
+        GO_FALLBACK_TOOLS=(
+            "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
+            "github.com/projectdiscovery/httpx/cmd/httpx"
+            "github.com/projectdiscovery/nuclei/v2/cmd/nuclei"
+            "github.com/ffuf/ffuf/v2"
+            "github.com/owasp-amass/amass/v4/cmd/amass"
+        )
+        GO_FALLBACK_NAMES=(subfinder httpx nuclei ffuf amass)
+        for i in "${!GO_FALLBACK_TOOLS[@]}"; do
+            tool_name="${GO_FALLBACK_NAMES[$i]}"
+            if command -v "$tool_name" &>/dev/null; then
+                log_ok "$tool_name already installed ($(command -v "$tool_name"))"
+            else
+                echo "    Installing $tool_name via go..."
+                if go install "${GO_FALLBACK_TOOLS[$i]}@latest" 2>/dev/null; then
+                    log_ok "$tool_name installed via go"
+                else
+                    log_err "$tool_name failed to install — run manually:"
+                    log_err "  go install ${GO_FALLBACK_TOOLS[$i]}@latest"
+                fi
+            fi
+        done
+    fi
+fi
 
 # Tools to install via Go
 echo ""
@@ -415,9 +537,18 @@ if [ "$INSTALL_CREDENTIAL_ATTACK" = true ]; then
     if command -v uv &>/dev/null; then
         log_ok "uv found ($(command -v uv)) — using it for isolated Python tool installs"
     elif ! command -v pipx &>/dev/null; then
-        echo "    [*] Installing pipx via brew..."
-        brew install pipx && pipx ensurepath
-        log_warn "pipx installed — restart shell or 'source ~/.zshrc' for PATH"
+        if command -v brew &>/dev/null; then
+            echo "    [*] Installing pipx via brew..."
+            if brew install pipx && pipx ensurepath; then
+                log_warn "pipx installed — restart shell or 'source ~/.zshrc' for PATH"
+            else
+                log_warn "pipx install via brew failed — install manually: python3 -m pip install --user pipx"
+            fi
+        elif command -v python3 &>/dev/null; then
+            echo "    [*] Installing pipx via python3 -m pip --user (no brew on Linux)..."
+            python3 -m pip install --user pipx 2>/dev/null || true
+            log_warn "pipx may need: python3 -m pip install --user pipx (then add ~/.local/bin to PATH)"
+        fi
     fi
 
     py_tool_install() {
