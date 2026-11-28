@@ -94,14 +94,20 @@ if ! command -v timeout &>/dev/null; then
     fi
 fi
 
+# Layer 2 hardening (live-sandbox finding): findings must NEVER default into
+# the package/repo tree ($BASE_DIR/findings/...) — an unscoped-run test wrote
+# findings inside a git clone. Default to the runtime data home instead (same
+# ${RHODAWK_HOME:-$HOME/.rhodawk} contract as engine/hunt); the explicit
+# FINDINGS_OUT_DIR env override still wins below.
+_RHODAWK_DATA_HOME="${RHODAWK_HOME:-$HOME/.rhodawk}"
 if [ "$(basename "$(dirname "$RECON_DIR")")" = "sessions" ]; then
     SESSION_ID=$(basename "$RECON_DIR")
     TARGET=$(basename "$(dirname "$(dirname "$RECON_DIR")")")
-    DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET/sessions/$SESSION_ID"
+    DEFAULT_FINDINGS_DIR="$_RHODAWK_DATA_HOME/findings/$TARGET/sessions/$SESSION_ID"
 else
     SESSION_ID=""
     TARGET=$(basename "$RECON_DIR")
-    DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET"
+    DEFAULT_FINDINGS_DIR="$_RHODAWK_DATA_HOME/findings/$TARGET"
 fi
 
 FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
@@ -110,9 +116,10 @@ FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
 # Mirrors recon_engine.sh: the compiled manifest (env RHODAWK_SCOPE_MANIFEST or
 # the session artifact at $RECON_DIR/scope/compiled_scope.json) is the single
 # scope authority. When one resolves, it MUST pass SHA-256 integrity validation
-# before any probe is sent — a missing or tampered manifest is a hard stop
-# (JSONL audit entry + exit 3), never a silent skip. When none resolves, the
-# upstream caller (hunt.py / the agent dispatcher) is the scope gate.
+# before any probe is sent — a tampered manifest is a hard stop (JSONL audit
+# entry + exit 3), never a silent skip. When NO manifest resolves, the gate
+# itself now fails closed (exit 3 + audit) unless RHODAWK_SCOPE_UNSAFE=1
+# explicitly opts out for authorized local testing (visible stderr warning).
 # shellcheck source=tools/_scope_gate.sh
 . "$SCRIPT_DIR/_scope_gate.sh"
 _SCOPE_GATE_TOOL="vuln_scanner.sh"
@@ -126,7 +133,7 @@ export PRIORITY_DIR="$RECON_DIR/priority"
 export FINDINGS_DIR
 
 CURL_TIMEOUT=60
-mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,lfi,ssti,graphql,cors,jwt,smuggling,cloud,manual_review,metasploit,.tmp}
+mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,lfi,ssti,graphql,cors,jwt,smuggling,cloud,manual_review,metasploit,mfa,saml,.tmp}
 
 # Upload-canary temp file (mktemp-created inside verify_upload_poc; the trap
 # guarantees cleanup on every exit path, including INT/TERM mid-probe).
@@ -613,7 +620,14 @@ if ! skip_has saml; then
         fi
     fi
 
-    SAML_FINDINGS=$(wc -l < "$FINDINGS_DIR/saml/findings.txt" 2>/dev/null || echo 0)
+    # Layer 2 live-sandbox fix (observed as "line 616: .../saml/findings.txt:
+    # No such file or directory"): findings.txt only exists once a SAML
+    # finding is written, and a failed `<` redirect reports to the shell's
+    # stderr BEFORE the command's own 2>/dev/null can install — unguarded.
+    SAML_FINDINGS=0
+    if [ -f "$FINDINGS_DIR/saml/findings.txt" ]; then
+        SAML_FINDINGS="$(wc -l < "$FINDINGS_DIR/saml/findings.txt" | tr -d ' ')"
+    fi
     [ "$SAML_FINDINGS" -gt 0 ] && log_ok "[SAML] $SAML_FINDINGS finding(s) — review $FINDINGS_DIR/saml/"
 fi
 

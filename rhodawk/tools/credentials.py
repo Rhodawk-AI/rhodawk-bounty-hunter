@@ -263,8 +263,17 @@ def legacy_root_secrets_file() -> Path:
 # ── Paths / small helpers ─────────────────────────────────────────────────────
 
 def vault_dir() -> Path:
+    """Managed-vault data home: $RHODAWK_HOME when set, else ~/.rhodawk.
+
+    Same RHODAWK_HOME contract as engine._data_home() and hunt._bh_home()
+    (Layer 2 hardening): blank-container and multi-target testing set
+    RHODAWK_HOME to isolate every runtime write; the vault helpers
+    previously ignored it and kept resolving Path.home() / ".rhodawk".
+    """
     ensure_home_migrated()
-    """~/.rhodawk (respects $HOME so tests can isolate it)."""
+    env = get_env("RHODAWK_HOME")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
     return Path.home() / ".rhodawk"
 
 

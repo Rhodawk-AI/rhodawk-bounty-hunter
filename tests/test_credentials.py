@@ -55,7 +55,10 @@ def vault_home(tmp_path, monkeypatch):
 
 
 def _write_vault(home: Path, content: str) -> Path:
-    vault = home / ".rhodawk"
+    # Layer 2 hardening: the vault home resolves via $RHODAWK_HOME (conftest
+    # pins it to tmp_path/rhodawk-home), so locate it through the production
+    # helper — the old hardcoded $HOME/.rhodawk no longer matches.
+    vault = credentials.vault_dir()
     vault.mkdir(parents=True, exist_ok=True)
     env_file = vault / ".env"
     env_file.write_text(content)
@@ -116,7 +119,7 @@ class TestWizard:
 
         values = credentials.run_interactive_onboarding()
 
-        vault = vault_home / ".rhodawk" / ".env"
+        vault = credentials.vault_env_file()
         assert vault.is_file()
         assert stat_mode(vault) == 0o600
         assert stat_mode(vault.parent) == 0o700
@@ -173,7 +176,7 @@ class TestWizard:
 
         assert all(v == "" for v in values.values())
         stored = credentials.parse_env_text(
-            (vault_home / ".rhodawk" / ".env").read_text())
+            credentials.vault_env_file().read_text())
         assert all(v == "" for v in stored.values())
         out = capsys.readouterr().out
         assert out.count(credentials.STATUS_SKIPPED) == len(
@@ -192,7 +195,7 @@ class TestWizard:
         credentials.run_interactive_onboarding()
 
         stored = credentials.parse_env_text(
-            (vault_home / ".rhodawk" / ".env").read_text())
+            credentials.vault_env_file().read_text())
         assert stored["H1_USERNAME"] == "existing-user"
 
     def test_wizard_eof_treated_as_skip(self, vault_home, monkeypatch):
@@ -310,7 +313,7 @@ class TestLoader:
         assert "hostuser" not in values.values()
         assert "host-LEAK-token" not in values.values()
         # strict priority order: the vault file is read (and wins) first
-        assert sources == [str(vault_home / ".rhodawk" / ".env"),
+        assert sources == [str(credentials.vault_env_file()),
                            str(root_file)]
 
     def test_vault_h1_token_precedence_over_legacy_env_style(
@@ -357,7 +360,7 @@ class TestLoader:
                             _answers({"H1_API_TOKEN": SECRET_TOKEN}))
         result = credentials.load_credentials(interactive=True)
 
-        assert (vault_home / ".rhodawk" / ".env").is_file()
+        assert credentials.vault_env_file().is_file()
         assert os.environ["H1_USERNAME"] == "wiz-user"
         assert os.environ["H1_API_TOKEN"] == SECRET_TOKEN
         assert result["auth_mode"] == "authenticated_rest"
@@ -488,7 +491,7 @@ class TestCLI:
                             _answers({"H1_API_TOKEN": SECRET_TOKEN}))
         assert credentials.main(["--setup"]) == 0
         stored = credentials.parse_env_text(
-            (vault_home / ".rhodawk" / ".env").read_text())
+            credentials.vault_env_file().read_text())
         assert stored["H1_USERNAME"] == "cli-user"
         assert stored["H1_API_TOKEN"] == SECRET_TOKEN
 
@@ -566,7 +569,7 @@ class TestEngineWiring:
         engine.cmd_setup(_setup_args())
 
         stored = credentials.parse_env_text(
-            (vault_home / ".rhodawk" / ".env").read_text())
+            credentials.vault_env_file().read_text())
         assert stored["H1_USERNAME"] == "setup-user"
         assert stored["H1_API_TOKEN"] == SECRET_TOKEN
         assert json.loads((vault_home / "config.json").read_text())["provider"] \
@@ -589,7 +592,7 @@ class TestEngineWiring:
 
         out = capsys.readouterr().out
         assert "Skipping interactive credential bootstrap" in out
-        assert not (vault_home / ".rhodawk" / ".env").exists()
+        assert not credentials.vault_env_file().exists()
 
     def test_doctor_shows_tool_to_credential_status(self, vault_home, capsys):
         """doctor displays READY / SKIPPED (blank) / KEYLESS per group."""

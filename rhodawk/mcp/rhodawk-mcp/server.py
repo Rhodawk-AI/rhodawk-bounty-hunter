@@ -37,12 +37,38 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(2) from exc
 
 _VERSION = "0.1.0"
-try:
-    plugin = _REPO / ".claude-plugin" / "plugin.json"
-    if plugin.exists():
-        _VERSION = json.loads(plugin.read_text()).get("version", _VERSION)
-except Exception:
-    pass
+
+
+def _resolve_server_version() -> str:
+    """serverInfo.version must report the real rhodawk package version.
+
+    Layer 2 live-sandbox finding: the previous resolution only read
+    .claude-plugin/plugin.json under _REPO — that file ships in a source
+    clone but NOT in a pip/pipx/uv install, so live `initialize` handshakes
+    on installed packages reported the hardcoded "0.1.0" fallback. Resolve
+    rhodawk.__version__ first (rhodawk/__init__.py is side-effect free, and
+    imports cleanly for installed packages), then the plugin manifest, then
+    the legacy literal as the last resort."""
+    try:
+        import rhodawk  # noqa: PLC0415
+
+        v = str(getattr(rhodawk, "__version__", "") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    try:
+        plugin = _REPO / ".claude-plugin" / "plugin.json"
+        if plugin.exists():
+            v = str(json.loads(plugin.read_text()).get("version", "") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return _VERSION
+
+
+_SERVER_VERSION = _resolve_server_version()
 
 POLICY = PolicyEngine()
 
@@ -54,7 +80,7 @@ mcp = MCPServer(
         "for authorized security testing. Adapter over existing recon, hunt, "
         "validate, report, memory, and lead-board engines."
     ),
-    version=_VERSION,
+    version=_SERVER_VERSION,
     instructions=(
         "Use for authorized bug-bounty research only. "
         "Always establish scope before active testing. "

@@ -39,8 +39,8 @@ Output:
   mirror     : ~/.rhodawk/scope/<handle>_compiled_scope.json
 
 CLI:
-  python3 -m rhodawk.tools.scope_compiler cloudflare
-  python3 -m rhodawk.tools.scope_compiler https://hackerone.com/cloudflare?type=team \
+  python3 -m rhodawk.tools.scope_compiler acme
+  python3 -m rhodawk.tools.scope_compiler https://hackerone.com/acme?type=team \
       [--output <path>] [--h1scope-csv <path>] [--huntdeck-db <path>] \
       [--bbscope-cache <path>]
 
@@ -177,8 +177,8 @@ def detect_platform(handle_or_url: str) -> str:
 def normalize_handle(handle_or_url: str) -> str:
     """Extract the exact lowercase program handle from a handle or URL.
 
-    "CloudFlare", "cloudflare", and
-    "https://hackerone.com/cloudflare?type=team" all yield "cloudflare".
+    "Acme", "acme", and
+    "https://hackerone.com/acme?type=team" all yield "acme".
     Platform URLs are supported too:
       https://bugcrowd.com/engagements/<slug>              → <slug>
       https://app.intigriti.com/researcher/program/c/p/... → last segment
@@ -219,7 +219,7 @@ def normalize_handle(handle_or_url: str) -> str:
     if not _HANDLE_RE.match(handle):
         raise ValueError(
             f"invalid program handle {raw!r}: expected lowercase "
-            "[a-z0-9_-] (e.g. cloudflare)")
+            "[a-z0-9_-] (e.g. acme)")
     return handle
 
 
@@ -1017,7 +1017,12 @@ def resolve_output_paths(handle: str, output=None) -> dict:
         env = os.environ.get("RECON_OUT_DIR", "").strip()
         base = Path(env).expanduser() if env else Path("recon") / handle
         primary = base / "scope" / "compiled_scope.json"
-    mirror_dir = Path.home() / ".rhodawk" / "scope"
+    # Layer 2 hardening: mirror must honor $RHODAWK_HOME like every other
+    # runtime write (engine._data_home / hunt._bh_home contract), so an
+    # isolated sandbox never gets a stray ~/.rhodawk/scope tree.
+    home_env = os.environ.get("RHODAWK_HOME", "").strip()
+    mirror_home = Path(home_env).expanduser() if home_env else Path.home() / ".rhodawk"
+    mirror_dir = mirror_home / "scope"
     return {
         "primary": primary,
         "mirror": mirror_dir / f"{handle}_compiled_scope.json",
