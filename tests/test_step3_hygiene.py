@@ -330,13 +330,32 @@ class TestDoctor:
         """The CI workflow lives directly at .github/workflows/ci.yml — the
         duplicate docs/ template was retired in the v2.0.0 standalone
         release. Keep the workflow content and .gitignore hygiene in
-        lockstep."""
+        lockstep.
+
+        CI matrix sync (780dabd refactor): the test must validate the
+        STRENGTHENED workflow shape, not the retired 3-file bash -n list —
+        a 3-version Python matrix (3.10/3.11/3.12), the shell syntax gate
+        over every tracked .sh via `git ls-files '*.sh' | xargs -r bash -n`
+        in BOTH jobs, the full pytest run, and a dedicated `wheel-gate` job
+        that runs tests/check_wheel_clean.py."""
         assert not (Path(ROOT) / "docs" / "workflow-ci.yml").exists()
         ci_path = Path(ROOT) / ".github" / "workflows" / "ci.yml"
         if ci_path.is_file():
             ci = ci_path.read_text()
-            assert "bash -n rhodawk/tools/recon_engine.sh install.sh install_tools.sh" in ci
+            # every tracked shell script is syntax-checked (both jobs)
+            assert "git ls-files '*.sh' | xargs -r bash -n" in ci
+            assert ci.count("git ls-files '*.sh' | xargs -r bash -n") >= 2, \
+                "shell syntax gate must run in the matrix job AND wheel-gate"
+            # full pytest in the matrix job
             assert "pytest -q" in ci
+            # 3-version matrix spans the full requires-python floor
+            matrix_line = 'python-version: ["3.10", "3.11", "3.12"]'
+            assert matrix_line in ci, f"CI matrix missing: {matrix_line!r}"
+            # dedicated wheel-gate job on its own runner
+            assert "wheel-gate:" in ci
+            wg = ci.split("wheel-gate:", 1)[1]
+            assert "python tests/check_wheel_clean.py" in wg, \
+                "wheel-gate job must run tests/check_wheel_clean.py"
         # else: the workflow ships separately — creating it on GitHub needs a
         # credential with the `workflow` scope (Contents R&W is not enough).
         gi = (Path(ROOT) / ".gitignore").read_text()
