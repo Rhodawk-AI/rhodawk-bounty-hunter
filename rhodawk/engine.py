@@ -1077,7 +1077,10 @@ def _doctor_mcp_check() -> tuple:
 def cmd_doctor(args):
     """Step 3: `rhodawk doctor` — fast (<5s) environment diagnostic.
     PASS / WARN / FAIL per check with the exact one-line fix command.
-    Exit 0 when nothing FAILs, 1 otherwise."""
+    Exit-code contract (documented in --help too): 0 = usable environment
+    (WARN = optional feature off); 1 = at least one FAIL row, or any WARN
+    row when --strict is passed. --quiet collapses the per-row PASS/WARN
+    output to FAIL rows + a grouped optional-WARN summary + the status line."""
     import shutil  # noqa: PLC0415
     import concurrent.futures  # noqa: PLC0415
 
@@ -1221,17 +1224,94 @@ def cmd_doctor(args):
     _mcp_status, _mcp_detail, _mcp_fix = _doctor_mcp_check()
     record(_mcp_status, "MCP module", _mcp_detail, _mcp_fix)
 
-    header("Environment doctor (rhodawk doctor)")
-    for status, label, detail, fix in results:
-        color = {"PASS": GREEN, "WARN": YELLOW, "FAIL": RED}[status]
-        print(f"{color}  [{status}]{NC} {label:<20} {detail}")
-        if fix:
-            print(f"        fix: {fix}")
+    # 6. PreToolUse scope-guard hook durability (Layer 1 polish, audit item 3).
+    #    --agent claude registers the guard in ~/.claude/settings.json pointing
+    #    at an interpreter + the durable ~/.rhodawk/hooks copy. If the venv was
+    #    uninstalled or the script copy removed, every gated tool call breaks.
+    #    Only checked when a hook is ACTUALLY registered — boxes that never
+    #    installed the Claude plugin must stay silent.
+    try:
+        import shlex  # noqa: PLC0415
+        _hook_settings = Path.home() / ".claude" / "settings.json"
+        _hook_registered = False
+        if _hook_settings.is_file():
+            try:
+                _hook_cfg = json.loads(_hook_settings.read_text(encoding="utf-8"))
+                _hook_pre = (((_hook_cfg or {}).get("hooks") or {})
+                             .get("PreToolUse") or [])
+                _hook_cmds = []
+                for _entry in _hook_pre:
+                    if not isinstance(_entry, dict):
+                        continue
+                    for _h in _entry.get("hooks", []) or []:
+                        if isinstance(_h, dict) \
+                                and "hook_scope_guard.py" in str(_h.get("command", "")):
+                            _hook_cmds.append(str(_h.get("command", "")))
+                _hook_registered = bool(_hook_cmds)
+            except (OSError, ValueError):
+                _hook_registered = False
+        if _hook_registered:
+            _hook_cmd = _hook_cmds[0]
+            try:
+                _hook_parts = shlex.split(_hook_cmd)
+            except ValueError:
+                _hook_parts = []
+            _hook_interp = _hook_parts[0] if _hook_parts else ""
+            _hook_script = _hook_parts[1] if len(_hook_parts) > 1 else ""
+            _interp_ok = bool(_hook_interp) and (
+                (os.path.isabs(_hook_interp) and os.access(_hook_interp, os.X_OK))
+                or shutil.which(_hook_interp) is not None)
+            _script_ok = bool(_hook_script) and os.access(_hook_script, os.X_OK)
+            if _interp_ok and _script_ok:
+                record("PASS", "PreToolUse hook",
+                       f"{_hook_interp} ... {_hook_script}")
+            else:
+                _missing = []
+                if not _interp_ok:
+                    _missing.append(f"interpreter {_hook_interp or '?'}")
+                if not _script_ok:
+                    _missing.append(f"script {_hook_script or '?'}")
+                record("WARN", "PreToolUse hook",
+                       f"dangling — missing/non-executable: {', '.join(_missing)}",
+                       "./install.sh --agent claude   # repo checkout — re-registers the durable hook copy")
+    except OSError:
+        pass  # never let the doctor itself die on a weird settings.json
+
+    _strict = bool(getattr(args, "strict", False))
+    _quiet = bool(getattr(args, "quiet", False))
+
+    if not _quiet:
+        header("Environment doctor (rhodawk doctor)")
+        for status, label, detail, fix in results:
+            color = {"PASS": GREEN, "WARN": YELLOW, "FAIL": RED}[status]
+            print(f"{color}  [{status}]{NC} {label:<20} {detail}")
+            if fix:
+                print(f"        fix: {fix}")
+    else:
+        # --quiet: FAIL rows only, then one grouped optional-WARN summary and
+        # the final status line (audit item 4: collapse the fresh-box WARN
+        # wall of 13 rows into two actionable lines).
+        for status, label, detail, fix in results:
+            if status != "FAIL":
+                continue
+            print(f"{RED}  [FAIL]{NC} {label:<20} {detail}")
+            if fix:
+                print(f"        fix: {fix}")
+        _warn_rows = [r for r in results if r[0] == "WARN"]
+        _cred_warns = [r for r in _warn_rows if r[3] == "rhodawk setup"]
+        _other_warns = [r for r in _warn_rows if r[3] != "rhodawk setup"]
+        if _cred_warns:
+            print(f"{YELLOW}  {len(_cred_warns)} optional credential/provider WARN(s) suppressed — run: rhodawk setup{NC}")
+        if _other_warns:
+            print(f"{YELLOW}  {len(_other_warns)} other optional WARN(s) suppressed — run: rhodawk doctor (full output){NC}")
     fails = sum(1 for r in results if r[0] == "FAIL")
     warns = sum(1 for r in results if r[0] == "WARN")
     print()
     if fails:
         print(f"{RED}  {fails} FAIL, {warns} WARN — fix the FAILs above{NC}")
+        raise SystemExit(1)
+    if _strict and warns:
+        print(f"{YELLOW}  0 FAIL, {warns} WARN — --strict: warnings present, exit 1{NC}")
         raise SystemExit(1)
     print(f"{GREEN}  0 FAIL, {warns} WARN — environment ready{NC}")
     raise SystemExit(0)
@@ -1409,7 +1489,29 @@ def main():
     sub.add_parser("providers", aliases=["p"], help="Show all providers + API key status")
     sub.add_parser("models",    aliases=["m"], help="List available models for active provider")
     sub.add_parser("status",    aliases=["s"], help="Show hunt pipeline status")
-    sub.add_parser("doctor",    help="Fast environment diagnostic (PASS/WARN/FAIL + 1-line fixes)")
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Fast environment diagnostic (PASS/WARN/FAIL + 1-line fixes)",
+        description=(
+            "Fast environment diagnostic (PASS/WARN/FAIL + 1-line fixes).\n"
+            "Exit-code contract: 0 = usable environment (WARN = an optional "
+            "feature is off, e.g. missing tool binaries or unset platform "
+            "credentials); 1 = at least one FAIL row, or — with --strict — "
+            "any WARN row."
+        ),
+    )
+    # Layer 1 polish (audit item 4): make the exit contract explicit and
+    # machine-usable. Default behavior is unchanged (exit 0 with WARNs) so
+    # existing callers/tests stay backward-compatible.
+    p_doctor.add_argument(
+        "--strict", action="store_true",
+        help="Exit 1 when WARN rows exist too, not only on FAIL rows",
+    )
+    p_doctor.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Print only [FAIL] rows, a grouped optional-WARN summary, and "
+             "the final status line (suppresses the per-row PASS/WARN wall)",
+    )
     sub.add_parser("chat",      aliases=["ask"], help="Interactive AI shell")
 
     p_recon = sub.add_parser("recon", aliases=["r"], help="Recon + AI surface analysis")

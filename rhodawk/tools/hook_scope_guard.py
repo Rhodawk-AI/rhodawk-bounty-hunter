@@ -60,16 +60,65 @@ import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+# ── durable-copy repo resolution (live-sandbox P0 fix) ────────────────────
+# install.sh copies this guard to ~/.rhodawk/hooks/hook_scope_guard.py and
+# records the source repo in ~/.rhodawk/hooks/.repo_root (0600). The copy is
+# NOT two directories below the package, so the historical "flat import"
+# fallback below resolves nothing and the module import crashed with an
+# exit-1 ModuleNotFoundError traceback before main() could fail closed.
+# Resolution order here: $RHODAWK_REPO_DIR, then the .repo_root record. When
+# a valid repo is found, BOTH the repo root and the rhodawk/ package dir go
+# on sys.path so `rhodawk._compat`, `contracts.scope` (rhodawk/contracts)
+# and `scope_checker` all import cleanly — even under bare system python3,
+# cwd=/tmp and a stripped env (no PYTHONPATH).
+_REPO_HINT = os.environ.get("RHODAWK_REPO_DIR", "")
+if not _REPO_HINT:
+    try:
+        _hint_file = Path(__file__).resolve().parent / ".repo_root"
+        if _hint_file.is_file():
+            _REPO_HINT = _hint_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        _REPO_HINT = ""
+if _REPO_HINT:
+    try:
+        _repo_root = Path(_REPO_HINT).resolve()
+        if (_repo_root / "rhodawk").is_dir():
+            for _p in (str(_repo_root), str(_repo_root / "rhodawk")):
+                if _p not in sys.path:
+                    sys.path.insert(0, _p)
+    except OSError:
+        pass
+
 try:
     from rhodawk._compat import get_env, ensure_home_migrated
 except ImportError:  # flat / script execution — resolve package dir
-    import os as _compat_os, sys as _compat_sys
-    _compat_dir = _compat_os.path.abspath(__file__)
-    for _ in range(2):
-        _compat_dir = _compat_os.path.dirname(_compat_dir)
-    if _compat_dir not in _compat_sys.path:
-        _compat_sys.path.insert(0, _compat_dir)
-    from _compat import get_env, ensure_home_migrated
+    try:
+        import os as _compat_os, sys as _compat_sys
+        _compat_dir = _compat_os.path.abspath(__file__)
+        for _ in range(2):
+            _compat_dir = _compat_os.path.dirname(_compat_dir)
+        if _compat_dir not in _compat_sys.path:
+            _compat_sys.path.insert(0, _compat_dir)
+        from _compat import get_env, ensure_home_migrated
+    except ImportError:
+        # Broken environment (repo deleted AND venv uninstalled): NEVER crash
+        # the hook with an exit-1 traceback — fail closed instead. Minimal
+        # stdlib shims keep execution on its way to main(), which returns
+        # exit 2 (SCOPE_HOOK_BLOCK) whenever contracts/scope.py or
+        # ScopeChecker cannot be imported.
+        def get_env(new_name, *legacy_names, default=None):
+            value = os.environ.get(new_name)
+            if value is not None:
+                return value
+            for legacy in legacy_names:
+                value = os.environ.get(legacy)
+                if value is not None:
+                    return value
+            return default
+
+        def ensure_home_migrated() -> None:
+            return None
 
 HERE = Path(__file__).resolve().parent          # rhodawk/tools
 RHODAWK_DIR = HERE.parent                     # rhodawk/

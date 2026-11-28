@@ -7,6 +7,9 @@ AGENT="${RHODAWK_AGENT:-claude}"
 SCOPE="global"
 SETUP_BURP="ask"
 NONINTERACTIVE=0
+# Layer 1 polish (audit item 6): optional MCP client config merge, off by
+# default — ./install.sh --agent mcp --client claude opts in.
+CLIENT_MERGE="none"
 # The standalone path prints its final Done! banner at the very END of the
 # script — after the reconFTW setup and the capability-registry rebuild — so
 # "Done!" is never followed by more install output (v2.0.5 UX fix).
@@ -43,7 +46,11 @@ tighten_rhodawk_home_perms() {
     chmod 700 "$rh_home" 2>/dev/null || true
     find "$rh_home" -path "$rh_home/venv" -prune -o \
         -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
-    find "$rh_home" -path "$rh_home/venv" -prune -o \
+    # Layer 1 polish (audit item 3): hooks/ holds the durable PreToolUse
+    # scope-guard copy (mode 0700, needs +x) — same program-data-not-secrets
+    # reasoning as venv/, so it is pruned from the 600 file pass too. The
+    # directory pass above still tightens hooks/ itself to 700.
+    find "$rh_home" \( -path "$rh_home/venv" -o -path "$rh_home/hooks" \) -prune -o \
         -type f -exec chmod 600 {} + 2>/dev/null || true
 }
 if [ -d "$HOME/.rhodawk" ]; then
@@ -103,6 +110,11 @@ Options:
                                   the end-of-install credential wizard)
   --no-burp                       Skip Claude Code Burp MCP setup prompt
   --yes-burp                      Print Claude Code Burp MCP setup instructions
+  --client claude                 With --agent mcp: safely merge the shipped
+                                  mcpServers["rhodawk"] entry into
+                                  ~/.claude/settings.json (atomic write,
+                                  .bak backup, idempotent). Default: none
+                                  (manual merge instructions only).
 EOF
 }
 
@@ -114,6 +126,13 @@ while [ "$#" -gt 0 ]; do
             ;;
         --agent=*)
             AGENT="${1#*=}"
+            ;;
+        --client)
+            shift
+            CLIENT_MERGE="${1:?--client requires a value}"
+            ;;
+        --client=*)
+            CLIENT_MERGE="${1#*=}"
             ;;
         --all)
             AGENT="all"
@@ -146,6 +165,21 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+
+# ── --client validation: fail fast, before any filesystem action ──────────────
+case "$CLIENT_MERGE" in
+    none|"") ;;
+    claude)
+        if [ "$AGENT" != "mcp" ]; then
+            echo "--client claude is only supported with --agent mcp (got --agent $AGENT)." >&2
+            exit 2
+        fi
+        ;;
+    *)
+        echo "Unsupported --client value: $CLIENT_MERGE (supported: claude)" >&2
+        exit 2
+        ;;
+esac
 
 copy_tree_items() {
     local src_glob="$1"
@@ -223,14 +257,43 @@ register_pretooluse_scope_guard() {
     if [ -x "$venv_python" ]; then
         guard_python="$venv_python"
     fi
+    # Layer 1 polish (audit item 3): the registered hook used to point straight
+    # into the repo checkout, so moving/deleting the checkout silently broke
+    # every gated tool call. Install a DURABLE copy under the data home and
+    # register that path instead — it survives repo moves, and uninstall.sh
+    # removes it together with the settings entry. The old repo-path entry is
+    # migrated in place, keeping the registration idempotent across upgrades.
+    local hooks_dir="${RHODAWK_HOME:-$HOME/.rhodawk}/hooks"
+    local durable_guard="$hooks_dir/hook_scope_guard.py"
+    local guard_active="$guard_src"
+    if mkdir -p "$hooks_dir" 2>/dev/null \
+        && cp "$guard_src" "$durable_guard" 2>/dev/null; then
+        chmod 700 "$hooks_dir" 2>/dev/null || true
+        chmod 700 "$durable_guard" 2>/dev/null || true
+        echo "[+] durable scope-guard copy installed: $durable_guard (0700)"
+        guard_active="$durable_guard"
+        # Live-sandbox P0 fix: record the source repo next to the durable
+        # copy (0600) so a bare-python3 run of the hook (RHODAWK_SKIP_DEPS=1
+        # installs, venv removed later, stripped env, cwd=/tmp) can still
+        # resolve rhodawk._compat / contracts.scope / scope_checker. The hook
+        # reads this record (or $RHODAWK_REPO_DIR) and prepends the repo to
+        # sys.path; if the repo is gone the hook fails CLOSED (exit 2)
+        # instead of crashing with a traceback.
+        if printf '%s\n' "$SCRIPT_DIR" > "$hooks_dir/.repo_root" 2>/dev/null; then
+            chmod 600 "$hooks_dir/.repo_root" 2>/dev/null || true
+        fi
+    else
+        echo "[!] could not install the durable scope-guard copy under $hooks_dir — registering the repo checkout path (breaks if the checkout moves)"
+    fi
 
-    python3 - "$settings" "$guard_src" "$guard_python" <<'PYGUARD' || { echo "[!] could not merge $settings — PreToolUse scope guard NOT registered"; return 0; }
+    python3 - "$settings" "$guard_active" "$guard_src" "$guard_python" <<'PYGUARD' || { echo "[!] could not merge $settings — PreToolUse scope guard NOT registered"; return 0; }
 import json
 import os
 import sys
 
 settings_path, guard_path = sys.argv[1], sys.argv[2]
-guard_python = sys.argv[3] if len(sys.argv) > 3 else "python3"
+legacy_path = sys.argv[3] if len(sys.argv) > 3 else ""
+guard_python = sys.argv[4] if len(sys.argv) > 4 else "python3"
 settings = {}
 if os.path.exists(settings_path):
     try:
@@ -253,27 +316,47 @@ if not isinstance(pre, list):
     print("[!] hooks.PreToolUse is not a list; refusing to edit", file=sys.stderr)
     sys.exit(1)
 
-def _guard_present(entries):
-    for entry in entries:
-        if not isinstance(entry, dict):
+def _entry_guard_kind(entry):
+    """Return 'current' | 'legacy' | None for a PreToolUse entry."""
+    if not isinstance(entry, dict):
+        return None
+    for h in entry.get("hooks", []) or []:
+        if not isinstance(h, dict):
             continue
-        for h in entry.get("hooks", []) or []:
-            if isinstance(h, dict) and guard_path in str(h.get("command", "")):
-                return True
-    return False
+        cmd = str(h.get("command", ""))
+        if guard_path and guard_path in cmd:
+            return "current"
+        if legacy_path and legacy_path in cmd:
+            return "legacy"
+    return None
 
-if _guard_present(pre):
-    print("[+] PreToolUse scope guard already registered")
+current = next((e for e in pre if _entry_guard_kind(e) == "current"), None)
+legacy = next((e for e in pre if _entry_guard_kind(e) == "legacy"), None)
+if current is not None:
+    print("[+] PreToolUse scope guard already registered (durable path)")
 else:
-    pre.append({
-        "matcher": "Bash|mcp__rhodawk-mcp__rhodawk_recon|mcp__rhodawk-mcp__rhodawk_hunt|mcp__rhodawk-mcp__rhodawk_hunt_class|mcp__rhodawk-mcp__rhodawk_research|mcp__rhodawk-mcp__rhodawk_run_rtw_capability",
-        "hooks": [{"type": "command", "command": command}],
-    })
-    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
-    with open(settings_path, "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2)
-        fh.write("\n")
-    print("[+] PreToolUse scope guard registered in", settings_path)
+    if legacy is not None:
+        # Upgrade-in-place: rewrite the command inside the existing entry so
+        # matcher and ordering are preserved and the registration stays
+        # idempotent (no duplicate entries for old installs).
+        for h in legacy.get("hooks", []) or []:
+            if isinstance(h, dict) and legacy_path and legacy_path in str(h.get("command", "")):
+                h["command"] = command
+        os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+        with open(settings_path, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2)
+            fh.write("\n")
+        print("[+] migrated PreToolUse scope guard to the durable path:", guard_path)
+    else:
+        pre.append({
+            "matcher": "Bash|mcp__rhodawk-mcp__rhodawk_recon|mcp__rhodawk-mcp__rhodawk_hunt|mcp__rhodawk-mcp__rhodawk_hunt_class|mcp__rhodawk-mcp__rhodawk_research|mcp__rhodawk-mcp__rhodawk_run_rtw_capability",
+            "hooks": [{"type": "command", "command": command}],
+        })
+        os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+        with open(settings_path, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2)
+            fh.write("\n")
+        print("[+] PreToolUse scope guard registered in", settings_path)
 PYGUARD
 }
 
@@ -289,6 +372,16 @@ install_claude() {
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     copy_files "$AGENTS_SRC/*.md" "$root/agents" "agent"
+    # Live-sandbox P0 fix: a Claude-only install used to register the scope
+    # guard with system python3 while no rhodawk package was importable, so
+    # EVERY gated tool call crashed with ModuleNotFoundError (exit 1). Build
+    # the managed venv FIRST (PEP 668-safe) so the registered interpreter can
+    # import rhodawk. With RHODAWK_SKIP_DEPS=1 (CI / offline) the hook falls
+    # back to the .repo_root record — and even if that record is lost too,
+    # the hook now fails CLOSED (exit 2), never crashes.
+    if [ "${RHODAWK_SKIP_DEPS:-0}" != "1" ]; then
+        ensure_managed_venv "$SCRIPT_DIR"
+    fi
     register_pretooluse_scope_guard "$root"
     echo "Done: $root"
 
@@ -638,6 +731,7 @@ install_mcp() {
     echo "  installed into the managed venv below (mcp>=2.2.0) — never bare system pip"
     echo ""
     echo "Claude Code — merge $MCP_SRC/rhodawk-mcp/claude-config.json into ~/.claude/settings.json mcpServers"
+    echo "              (or let the installer do it safely: ./install.sh --agent mcp --client claude)"
     echo "OpenCode   — merge $MCP_SRC/rhodawk-mcp/opencode-config.json into opencode mcp config"
     echo ""
     echo "Active tools require scope_domains + approve=true (or RHODAWK_MCP_APPROVE=1)."
@@ -666,10 +760,123 @@ install_mcp() {
         echo "    python3 -m venv \"$MCP_HOME_HINT/venv\""
         echo "    \"$MCP_HOME_HINT/venv/bin/pip\" install -e \"$SCRIPT_DIR\""
     fi
+    # Layer 1 polish (audit item 6): opt-in safe merge of the shipped MCP
+    # client entry into ~/.claude/settings.json. Default (--client none)
+    # stays fully non-invasive: instructions only.
+    # Live-sandbox P1 fix: the shipped entry uses the bare "rhodawk" command.
+    # On a fresh MCP-only box rhodawk is not on PATH yet, so Claude Code
+    # would get a broken server. Resolve it: prefer the venv CLI (absolute
+    # path), otherwise tell the user exactly how to fix PATH.
+    if [ "$CLIENT_MERGE" = "claude" ]; then
+        local merge_cli=""
+        if command -v rhodawk >/dev/null 2>&1; then
+            merge_cli=""   # resolvable as-is — keep the shipped entry
+        elif [ -n "${venv_dir:-}" ] && [ -x "${venv_dir}/bin/rhodawk" ]; then
+            merge_cli="${venv_dir}/bin/rhodawk"
+            echo "[*] rhodawk not on PATH — merging mcpServers with the venv CLI: $merge_cli"
+        else
+            merge_cli="__UNRESOLVED__"
+        fi
+        merge_mcp_client_config claude "$merge_cli"
+    fi
     # NOTE: deliberately no "Done." here (Layer 1B Issue #4) — the reconFTW
     # capability-delegation setup and credential bootstrap run AFTER the agent
     # dispatch; the final Done banner at the bottom of the script prints after
     # all of it, matching the clean --agent standalone ordering.
+}
+
+# ── Opt-in MCP client config merge (Layer 1 polish, audit item 6) ─────────────
+# Merges every mcpServers entry from the shipped claude-config.json into
+# ~/.claude/settings.json: atomic write (tmp + os.replace), .bak backup of the
+# pre-change file, pre-existing keys/hooks preserved verbatim, idempotent on
+# re-run, and an existing entry with DIFFERENT content is never overwritten
+# (warned and skipped instead).
+merge_mcp_client_config() {
+    local root="$HOME/.claude"
+    local settings="$root/settings.json"
+    local src="$MCP_SRC/rhodawk-mcp/claude-config.json"
+    # Optional 2nd arg: absolute rhodawk CLI to substitute for the bare
+    # "rhodawk" command when it is not on PATH ("" = leave as shipped,
+    # "__UNRESOLVED__" = nothing to substitute — warn instead).
+    local mcp_cli="${2:-}"
+    [ -f "$src" ] || { echo "[!] $src missing — cannot merge MCP client config"; return 0; }
+    python3 - "$settings" "$src" "$mcp_cli" <<'PY' \
+        || echo "[!] could not merge MCP client config into $settings (left unchanged)"
+import json
+import os
+import sys
+
+settings_path, src_path = sys.argv[1], sys.argv[2]
+mcp_cli = sys.argv[3] if len(sys.argv) > 3 else ""
+with open(src_path, encoding="utf-8") as fh:
+    incoming = json.load(fh)
+inc_servers = incoming.get("mcpServers", {}) if isinstance(incoming, dict) else {}
+if not isinstance(inc_servers, dict) or not inc_servers:
+    print("[!] no mcpServers entries in the shipped client config — nothing to merge")
+    sys.exit(1)
+
+settings = {}
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        print(f"[!] existing {settings_path} is not valid JSON; refusing to edit it",
+              file=sys.stderr)
+        sys.exit(1)
+if not isinstance(settings, dict):
+    print(f"[!] {settings_path} is not a JSON object; refusing to edit it", file=sys.stderr)
+    sys.exit(1)
+
+snapshot = json.loads(json.dumps(settings))  # pre-change copy for the .bak
+servers = settings.setdefault("mcpServers", {})
+if not isinstance(servers, dict):
+    print("[!] mcpServers is not an object; refusing to edit", file=sys.stderr)
+    sys.exit(1)
+
+changed, skipped = [], []
+for key, entry in inc_servers.items():
+    entry = dict(entry)
+    # Live-sandbox P1 fix: a bare "rhodawk" command is only launchable when
+    # rhodawk is on PATH. Substitute the absolute venv CLI when available;
+    # otherwise warn loudly so the merged config is never silently broken.
+    if entry.get("command") == "rhodawk" and mcp_cli == "__UNRESOLVED__":
+        print("[!] 'rhodawk' is not on PATH and no venv CLI was found — the "
+              "merged mcpServers entry would not launch. fix: run "
+              "./install.sh --agent standalone (links rhodawk onto PATH) and "
+              "re-run ./install.sh --agent mcp --client claude, or add the "
+              "venv bin dir to PATH.", file=sys.stderr)
+    elif entry.get("command") == "rhodawk" and mcp_cli:
+        entry["command"] = mcp_cli
+    if key in servers:
+        if servers[key] == entry:
+            continue  # already merged, identical — idempotent no-op
+        skipped.append(key)  # user customized it — never overwrite
+        continue
+    servers[key] = entry
+    changed.append(key)
+
+if skipped:
+    for key in skipped:
+        print(f"[!] mcpServers['{key}'] already exists with different content — left untouched", file=sys.stderr)
+if not changed:
+    print("[+] MCP client config already merged (idempotent no-op)")
+    sys.exit(0)
+
+os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+if os.path.exists(settings_path):
+    backup = settings_path + ".bak"
+    with open(backup, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, indent=2)
+        fh.write("\n")
+    print("[+] backup written:", backup)
+tmp = settings_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(settings, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, settings_path)
+print("[+] merged mcpServers into", settings_path, ":", ", ".join(changed))
+PY
 }
 
 case "$AGENT" in
@@ -684,6 +891,9 @@ case "$AGENT" in
         install_mcp
         ;;
     claude)
+        # Layer 1 polish (audit item 5): the closing banner prints at the very
+        # bottom, AFTER the reconFTW setup block, like standalone/mcp.
+        DONE_BANNER=1
         install_claude
         ;;
     opencode)
@@ -707,7 +917,15 @@ case "$AGENT" in
         install_antigravity
         ;;
     all)
+        # Layer 1 polish (audit item 7): --agent all runs every target and
+        # closes with ONE per-target summary banner after the reconFTW setup.
+        # Live-sandbox P1 fix: standalone FIRST — it creates the managed venv
+        # and links rhodawk/rhodawk-agent onto PATH, so install_claude
+        # registers the venv interpreter (not bare python3) and `rhodawk
+        # doctor` works immediately after the install instead of exit 127.
         SETUP_BURP="no"
+        DONE_BANNER=1
+        install_standalone
         install_claude
         install_antigravity
         install_opencode
@@ -817,11 +1035,14 @@ if [ "$NONINTERACTIVE" != "1" ] && [ -t 0 ] && command -v python3 >/dev/null 2>&
         || echo "[!] credential bootstrap failed — run later: rhodawk setup"
 fi
 
-# ── Final standalone summary — always the LAST block printed ─────────────────
+# ── Final closing summary — always the LAST block printed ─────────────────────
 # v2.0.5 UX fix: the old banner was printed from inside install_standalone
 # BEFORE the reconFTW clone/pin and the capability-registry rebuild ran, so
 # "Done!" was followed by a page of clone output and a raw JSON dump. All of
 # that now happens first; this banner is genuinely last.
+# Layer 1 polish (audit item 5): EVERY agent target now closes with exactly
+# one banner here (standalone, mcp, claude, all), instead of claude/all
+# ending abruptly on the reconFTW capability line.
 if [ "${DONE_BANNER:-0}" = "1" ]; then
     echo ""
     echo "════════════════════════════════════════════════════"
@@ -835,6 +1056,23 @@ if [ "${DONE_BANNER:-0}" = "1" ]; then
         echo "    rhodawk mcp serve"
         echo "    rhodawk mcp doctor"
         echo "    rhodawk mcp tools"
+    elif [ "$AGENT" = "claude" ]; then
+        echo "  Done. RhodawkAI Bounty Hunter is ready for Claude Code:"
+        echo ""
+        echo "    claude recon target.com"
+        echo "    claude hunt target.com"
+        echo "    rhodawk doctor"
+    elif [ "$AGENT" = "all" ]; then
+        echo "  Done. All targets installed:"
+        echo ""
+        echo "    Standalone CLI: ${RHODAWK_BIN_DIR:-/usr/local/bin}/rhodawk (+ rhodawk-agent)"
+        echo "    Claude Code   : $HOME/.claude"
+        echo "    Antigravity   : ${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/config}"
+        echo "    OpenCode      : ${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+        echo "    Pi            : $HOME/.pi/agent"
+        echo "    Codex         : ${CODEX_HOME:-$HOME/.codex}"
+        echo "    Shared skills : $HOME/.agents/skills"
+        echo "    MCP server    : rhodawk mcp serve"
     else
         echo "  Done! Type from anywhere:"
         echo ""
