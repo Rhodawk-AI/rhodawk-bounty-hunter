@@ -78,6 +78,14 @@ if [ "$SCOPE" = "project" ] && [[ "$AGENT" == "standalone" || "$AGENT" == "engin
 fi
 
 if [ "$ASSUME_YES" != "yes" ]; then
+    # Layer 1 polish (audit item 2): with closed stdin (CI, piped installs)
+    # the old `read -r -p "Continue?"` hit EOF and — under `set -e` — aborted
+    # the script with exit 1 and no explanation, having modified nothing.
+    # Fail LOUDLY with the actionable fix instead, and never touch files.
+    if [ ! -t 0 ]; then
+        echo "Non-interactive stdin detected: pass --agent <target> --yes (or run from an interactive terminal)." >&2
+        exit 2
+    fi
     echo "This will uninstall RhodawkAI Bounty Hunter components for: $AGENT ($SCOPE)."
     if [ "$PURGE_CONFIG" = "yes" ]; then
         echo "The saved provider/model configuration will also be removed."
@@ -135,6 +143,62 @@ uninstall_claude() {
     remove_tree_items "$SCRIPT_DIR/skills/*" "$root/skills" "Claude skill"
     remove_files "$SCRIPT_DIR/commands/*.md" "$root/commands" "Claude command"
     remove_files "$SCRIPT_DIR/agents/*.md" "$root/agents" "Claude agent"
+    remove_claude_scope_guard "$root"
+}
+
+# Layer 1 polish (audit item 3): the PreToolUse scope guard lives in
+# ~/.claude/settings.json (registered by install.sh --agent claude) and its
+# durable copy lives in ~/.rhodawk/hooks/hook_scope_guard.py. Removing the
+# plugin files without removing BOTH leaves a hook pointing at a script that
+# no longer exists (fail-closed block on every Bash call, or hook errors).
+remove_claude_scope_guard() {
+    local root="${1:-$HOME/.claude}"
+    local settings="$root/settings.json"
+    if [ -f "$settings" ] && command -v python3 >/dev/null 2>&1; then
+        python3 - "$settings" <<'PY' \
+            || echo "[!] could not update $settings — PreToolUse scope guard entry left in place" >&2
+import json
+import os
+import sys
+
+settings_path = sys.argv[1]
+try:
+    with open(settings_path, encoding="utf-8") as fh:
+        settings = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(0)  # nothing registered in a readable file — nothing to remove
+hooks = settings.get("hooks") if isinstance(settings, dict) else None
+pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+if not isinstance(pre, list):
+    sys.exit(0)
+
+def _is_guard_entry(entry):
+    if not isinstance(entry, dict):
+        return False
+    for h in entry.get("hooks", []) or []:
+        if isinstance(h, dict) and "hook_scope_guard.py" in str(h.get("command", "")):
+            return True
+    return False
+
+kept = [e for e in pre if not _is_guard_entry(e)]
+if len(kept) == len(pre):
+    sys.exit(0)  # no rhodawk scope-guard entry registered
+hooks["PreToolUse"] = kept
+tmp = settings_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(settings, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, settings_path)
+print("+ Removed PreToolUse scope guard entry: %s" % settings_path)
+PY
+    fi
+    local durable="${RHODAWK_HOME:-$HOME/.rhodawk}/hooks/hook_scope_guard.py"
+    remove_path "$durable" "durable PreToolUse scope guard copy"
+    # drop the hooks/ dir itself when nothing else lives there
+    if [ -d "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" ] \
+       && [ -z "$(find "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        rmdir "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" 2>/dev/null || true
+    fi
 }
 
 uninstall_opencode() {
@@ -273,6 +337,20 @@ uninstall_standalone() {
     if [ -f "$venv_dir/.rhodawk-managed-venv" ]; then
         remove_path "$venv_dir" "standalone venv"
         echo "  (user data preserved: ~/.rhodawk/.env, config.json, recon/, findings/, reports/)"
+        # Layer 1 polish (audit item 3): a Claude-plugin install registers the
+        # scope guard with the venv interpreter when the venv exists. Removing
+        # the venv leaves that registered command pointing at a dead
+        # interpreter — warn loudly with both remediation paths instead of
+        # letting the user discover it as a broken hook later.
+        local claude_settings="$HOME/.claude/settings.json"
+        if [ -f "$claude_settings" ] \
+           && grep -q "hook_scope_guard.py" "$claude_settings" 2>/dev/null \
+           && grep -q "$venv_dir" "$claude_settings" 2>/dev/null; then
+            echo "[!] warning: ~/.claude/settings.json registers hook_scope_guard.py"
+            echo "    with the venv interpreter that was just removed ($venv_dir/bin/python)."
+            echo "    fix: ./install.sh --agent claude   # re-registers the hook (durable ~/.rhodawk/hooks copy, system python3 if no venv)"
+            echo "    or: ./install.sh --agent standalone   # recreates the managed venv"
+        fi
     elif [ -d "$venv_dir" ]; then
         echo "! $venv_dir has no rhodawk-managed marker — left in place"
     fi

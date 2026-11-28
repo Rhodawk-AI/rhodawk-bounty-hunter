@@ -16,7 +16,9 @@ Two jobs, both tiny and side-effect-light:
    files enforced after the move). Idempotent: no-op when the legacy
    directory is absent or the new one already exists. The tightening pass
    never touches symlinks (chmod would follow them) and never touches any
-   ``venv/`` subtree — the standalone-install venv must keep its +x bits.
+   ``venv/`` subtree — the standalone-install venv must keep its +x bits —
+   nor any ``hooks/`` subtree, which holds the durable PreToolUse
+   scope-guard copy (mode 0700, needs its +x to keep gating tool calls).
 """
 
 from __future__ import annotations
@@ -97,7 +99,11 @@ def ensure_home_migrated() -> None:
                 # installed CLI self-destructed on its next startup
                 # (`rhodawk status` ok, then `rhodawk doctor` -> exit 126).
                 # Skip every venv subtree; wherever it appears.
-                if "venv" in child.relative_to(new).parts:
+                # Layer 1 polish (audit item 3): hooks/ holds the durable
+                # PreToolUse scope-guard copy (0700, needs +x) — same
+                # program-data reasoning, same skip.
+                if "venv" in child.relative_to(new).parts \
+                        or "hooks" in child.relative_to(new).parts:
                     continue
                 if child.is_dir():
                     os.chmod(child, 0o700)

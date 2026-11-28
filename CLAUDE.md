@@ -1,4 +1,4 @@
-# Claude Bug Bounty — Plugin Guide
+# RhodawkAI Bounty Hunter — Plugin Guide
 
 This repo is a Claude Code plugin for professional bug bounty hunting across HackerOne, Bugcrowd, Intigriti, and Immunefi.
 
