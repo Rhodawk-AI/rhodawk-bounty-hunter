@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Bug Bounty — install skills, commands, and agents for multiple harnesses.
+# RhodawkAI Bounty Hunter — install skills, commands, and agents for multiple harnesses.
 
 set -euo pipefail
 
@@ -182,6 +182,14 @@ copy_files() {
     for item in $src_glob; do
         [ -f "$item" ] || continue
         name=$(basename "$item")
+        # Layer 1B Issue #2: commands/ and agents/ ship a repo README.md that
+        # is documentation, not a slash command or sub-agent — installing it
+        # produced ~/.claude/commands/README.md (and agents/README.md) as a
+        # broken harness entry everywhere copy_files is used. Skip README.md
+        # case-insensitively (portable bash-3.2 case pattern).
+        case "$name" in
+            [Rr][Ee][Aa][Dd][Mm][Ee].[Mm][Dd]) continue ;;
+        esac
         cp "$item" "$dest_dir/$name"
         echo "✓ Installed $label: $name"
         copied=$((copied + 1))
@@ -205,13 +213,24 @@ register_pretooluse_scope_guard() {
     local guard_src="$SCRIPT_DIR/rhodawk/tools/hook_scope_guard.py"
     [ -f "$guard_src" ] || { echo "[!] scope guard script missing — hook not registered"; return 0; }
     command -v python3 >/dev/null 2>&1 || { echo "[!] python3 unavailable — PreToolUse scope guard NOT registered"; return 0; }
+    # Layer 1B Issue #4: prefer the managed-venv interpreter for the REGISTERED
+    # hook command when it exists (hook_scope_guard.py imports cleanly under
+    # both system python3 and the venv python — stdlib-only, verified by
+    # tests/test_layer1b_plugin_mcp_tools.py). The merger below still runs on
+    # system python3 (stdlib json only).
+    local guard_python="python3"
+    local venv_python="${RHODAWK_HOME:-$HOME/.rhodawk}/venv/bin/python"
+    if [ -x "$venv_python" ]; then
+        guard_python="$venv_python"
+    fi
 
-    python3 - "$settings" "$guard_src" <<'PYGUARD' || { echo "[!] could not merge $settings — PreToolUse scope guard NOT registered"; return 0; }
+    python3 - "$settings" "$guard_src" "$guard_python" <<'PYGUARD' || { echo "[!] could not merge $settings — PreToolUse scope guard NOT registered"; return 0; }
 import json
 import os
 import sys
 
 settings_path, guard_path = sys.argv[1], sys.argv[2]
+guard_python = sys.argv[3] if len(sys.argv) > 3 else "python3"
 settings = {}
 if os.path.exists(settings_path):
     try:
@@ -224,7 +243,7 @@ if not isinstance(settings, dict):
     print(f"[!] {settings_path} is not a JSON object; refusing to edit it", file=sys.stderr)
     sys.exit(1)
 
-command = f'python3 "{guard_path}"'
+command = f'{guard_python} "{guard_path}"'
 hooks = settings.setdefault("hooks", {})
 if not isinstance(hooks, dict):
     print("[!] hooks is not an object; refusing to edit", file=sys.stderr)
@@ -266,7 +285,7 @@ install_claude() {
         root="$HOME/.claude"
     fi
 
-    echo "Installing Claude Bug Bounty for Claude Code ($SCOPE)..."
+    echo "Installing RhodawkAI Bounty Hunter for Claude Code ($SCOPE)..."
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     copy_files "$AGENTS_SRC/*.md" "$root/agents" "agent"
@@ -282,11 +301,22 @@ install_claude() {
         echo "Connect to PortSwigger's Burp MCP server for live HTTP traffic visibility."
         echo "See $MCP_SRC/burp-mcp-client/README.md for setup instructions."
         echo ""
-        read -r -p "Set up Burp MCP now? (y/N): " setup_burp
-        case "$setup_burp" in
-            [Yy]*) SETUP_BURP="yes" ;;
-            *) SETUP_BURP="no" ;;
-        esac
+        # Layer 1B Issue #1: under `set -e` a bare `read` hitting EOF
+        # (stdin closed: `./install.sh --agent claude < /dev/null`, CI) aborted
+        # the whole install with exit 1. Non-interactive runs (--non-interactive
+        # or stdin not a TTY) skip the prompt cleanly; even on a TTY the read is
+        # guarded so Ctrl+D degrades to "no" instead of killing the installer.
+        if [ "$NONINTERACTIVE" = "1" ] || [ ! -t 0 ]; then
+            SETUP_BURP="no"
+        else
+            local setup_burp_answer=""
+            read -r -p "Set up Burp MCP now? (y/N): " setup_burp_answer \
+                || setup_burp_answer="n"
+            case "$setup_burp_answer" in
+                [Yy]*) SETUP_BURP="yes" ;;
+                *) SETUP_BURP="no" ;;
+            esac
+        fi
     fi
 
     if [ "$SETUP_BURP" = "yes" ]; then
@@ -319,7 +349,7 @@ install_opencode() {
         root="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
     fi
 
-    echo "Installing Claude Bug Bounty for OpenCode ($SCOPE)..."
+    echo "Installing RhodawkAI Bounty Hunter for OpenCode ($SCOPE)..."
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     copy_files "$AGENTS_SRC/*.md" "$root/agents" "agent"
@@ -341,7 +371,7 @@ install_pi() {
         root="$HOME/.pi/agent"
     fi
 
-    echo "Installing Claude Bug Bounty for Pi Agent ($SCOPE)..."
+    echo "Installing RhodawkAI Bounty Hunter for Pi Agent ($SCOPE)..."
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/prompts" "prompt"
     echo "Done: $root"
@@ -362,7 +392,7 @@ install_codex() {
         root="${CODEX_HOME:-$HOME/.codex}"
     fi
 
-    echo "Installing Claude Bug Bounty for Codex-style Agent Skills ($SCOPE)..."
+    echo "Installing RhodawkAI Bounty Hunter for Codex-style Agent Skills ($SCOPE)..."
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     echo "Done: $root"
@@ -405,32 +435,18 @@ install_antigravity() {
     echo "  rhodawk login"
 }
 
-install_standalone() {
-    echo ""
-    echo "════════════════════════════════════════════════════"
-    echo "  RhodawkAI Bounty Hunter Standalone Engine (no subscription)"
-    echo "════════════════════════════════════════════════════"
-    echo ""
-
-    local repo_dir engine existing_cmd bin_dir target action
-    local -a install_cmd
-    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    engine="$repo_dir/rhodawk/engine.py"
-
-    # Make engine.py executable
-    chmod +x "$engine"
-
-    # ── Dedicated isolated venv (PEP 668-safe) ────────────────────────────────
-    # Ubuntu 24.04+ (PEP 668) rejects pip installs into the system Python, so
-    # the old bare `pip3 install requests ollama` failed silently on every
-    # fresh box: rhodawk stayed a raw engine.py symlink with no mcp/requests
-    # and rhodawk-agent was never installed at all. Preferred path: a
-    # dedicated venv under the data home with the repo installed editable, so
-    # rhodawk, rhodawk-agent, requests and the mcp SDK all resolve from ANY
-    # working directory (also fixes `python3 -m rhodawk.tools.credentials`
-    # not being importable outside the repo checkout).
-    local venv_dir venv_ok=0
+# ── Dedicated isolated venv (PEP 668-safe), shared by --agent standalone and
+#    --agent mcp (Layer 1B Issue #4) ──────────────────────────────────────────
+# Ubuntu 24.04+ (PEP 668) rejects pip installs into the system Python, so bare
+# `pip3 install ...` fails on every fresh box. Preferred path: a dedicated venv
+# under the data home with the repo installed editable, so rhodawk,
+# rhodawk-agent, requests and the mcp SDK all resolve from ANY working
+# directory. Sets the globals venv_dir + venv_ok (0/1). Never touches the
+# system Python.
+ensure_managed_venv() {
+    local repo_dir="$1"
     venv_dir="${RHODAWK_HOME:-$HOME/.rhodawk}/venv"
+    venv_ok=0
     if [ "${RHODAWK_SKIP_DEPS:-0}" = "1" ]; then
         echo "[i] RHODAWK_SKIP_DEPS=1 — skipping venv + pip setup (raw engine symlink mode)"
     elif command -v python3 >/dev/null 2>&1; then
@@ -454,6 +470,28 @@ install_standalone() {
             fi
         fi
     fi
+}
+
+install_standalone() {
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo "  RhodawkAI Bounty Hunter Standalone Engine (no subscription)"
+    echo "════════════════════════════════════════════════════"
+    echo ""
+
+    local repo_dir engine existing_cmd bin_dir target action
+    local -a install_cmd
+    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    engine="$repo_dir/rhodawk/engine.py"
+
+    # Make engine.py executable
+    chmod +x "$engine"
+
+    # ── Dedicated isolated venv (PEP 668-safe) ────────────────────────────────
+    # Shared helper (Layer 1B Issue #4): the SAME venv that --agent mcp uses
+    # and validates. Sets the globals venv_dir + venv_ok so the link/fallback
+    # logic below can keep referencing them verbatim.
+    ensure_managed_venv "$repo_dir"
 
     # ── Install rhodawk + rhodawk-agent system commands ──────────────────────
     # Prefer updating the currently active managed installation. This prevents
@@ -582,20 +620,22 @@ install_standalone() {
 }
 
 install_mcp() {
+    local MCP_HOME_HINT="${RHODAWK_HOME:-$HOME/.rhodawk}"
     echo "════════════════════════════════════════════════════"
     echo "  RhodawkAI Bounty Hunter MCP"
     echo "════════════════════════════════════════════════════"
     echo ""
-    echo "Server entry:"
-    echo "  python3 $MCP_SRC/rhodawk-mcp/server.py"
-    echo "  # or: rhodawk mcp serve   (after standalone install)"
+    echo "Server entry (preferred):"
+    echo "  rhodawk mcp serve"
+    echo "  # or, when the rhodawk CLI is not on PATH:"
+    echo "  \"$MCP_HOME_HINT/venv/bin/python\" $MCP_SRC/rhodawk-mcp/server.py"
     echo ""
     echo "Doctor / tool catalog:"
     echo "  rhodawk mcp doctor"
     echo "  rhodawk mcp tools"
     echo ""
     echo "Python SDK:"
-    echo "  pip install 'mcp>=2.2.0'"
+    echo "  installed into the managed venv below (mcp>=2.2.0) — never bare system pip"
     echo ""
     echo "Claude Code — merge $MCP_SRC/rhodawk-mcp/claude-config.json into ~/.claude/settings.json mcpServers"
     echo "OpenCode   — merge $MCP_SRC/rhodawk-mcp/opencode-config.json into opencode mcp config"
@@ -603,11 +643,33 @@ install_mcp() {
     echo "Active tools require scope_domains + approve=true (or RHODAWK_MCP_APPROVE=1)."
     echo "Existing Burp / Caido / HackerOne integrations are unchanged."
     echo ""
-    if [ "${RHODAWK_SKIP_DEPS:-0}" != "1" ] && command -v pip3 &>/dev/null; then
-        echo "Installing mcp SDK (optional)..."
-        pip3 install --quiet 'mcp>=2.2.0' 2>/dev/null || echo "[!] pip install mcp failed — install manually"
+    # Layer 1B Issue #4: the old bare `pip3 install 'mcp>=2.2.0'` failed on
+    # every PEP 668 system (Ubuntu 24.04: externally-managed-environment) even
+    # when ~/.rhodawk/venv already had mcp. Reuse the SAME PEP 668-safe
+    # managed venv as --agent standalone (ensure_managed_venv) and verify the
+    # SDK import inside it. Bare system pip3 is never invoked.
+    ensure_managed_venv "$SCRIPT_DIR"
+    if [ "$venv_ok" = "1" ] && [ -x "$venv_dir/bin/python" ]; then
+        if "$venv_dir/bin/python" -c "import mcp.server" >/dev/null 2>&1; then
+            echo "[+] mcp SDK verified in the managed venv (import mcp.server OK)"
+        elif [ -x "$venv_dir/bin/pip" ]; then
+            echo "[*] Installing mcp SDK into the managed venv (PEP 668-safe)..."
+            if "$venv_dir/bin/pip" install --quiet 'mcp>=2.2.0'; then
+                echo "[+] mcp SDK installed into the managed venv"
+            else
+                echo "[!] mcp SDK install failed — install manually:"
+                echo "    \"$venv_dir/bin/pip\" install 'mcp>=2.2.0'"
+            fi
+        fi
+    else
+        echo "[i] No managed venv — create it for full MCP support (PEP 668-safe):"
+        echo "    python3 -m venv \"$MCP_HOME_HINT/venv\""
+        echo "    \"$MCP_HOME_HINT/venv/bin/pip\" install -e \"$SCRIPT_DIR\""
     fi
-    echo "Done."
+    # NOTE: deliberately no "Done." here (Layer 1B Issue #4) — the reconFTW
+    # capability-delegation setup and credential bootstrap run AFTER the agent
+    # dispatch; the final Done banner at the bottom of the script prints after
+    # all of it, matching the clean --agent standalone ordering.
 }
 
 case "$AGENT" in
@@ -618,6 +680,7 @@ case "$AGENT" in
         ;;
     mcp)
         SETUP_BURP="no"
+        DONE_BANNER=1
         install_mcp
         ;;
     claude)
@@ -762,13 +825,25 @@ fi
 if [ "${DONE_BANNER:-0}" = "1" ]; then
     echo ""
     echo "════════════════════════════════════════════════════"
-    echo "  Done! Type from anywhere:"
-    echo ""
-    echo "    rhodawk doctor"
-    echo "    rhodawk setup"
-    echo "    rhodawk scope-compile <handle>"
-    echo "    rhodawk recon <target>"
-    echo "    rhodawk-agent --help"
+    if [ "$AGENT" = "mcp" ]; then
+        # Layer 1B Issue #4: --agent mcp gets its final "Done." here too —
+        # i.e. AFTER the reconFTW capability-delegation setup that runs post-
+        # dispatch, instead of the old mid-function "Done." followed by a
+        # page of clone output.
+        echo "  Done. rhodawk MCP is ready:"
+        echo ""
+        echo "    rhodawk mcp serve"
+        echo "    rhodawk mcp doctor"
+        echo "    rhodawk mcp tools"
+    else
+        echo "  Done! Type from anywhere:"
+        echo ""
+        echo "    rhodawk doctor"
+        echo "    rhodawk setup"
+        echo "    rhodawk scope-compile <handle>"
+        echo "    rhodawk recon <target>"
+        echo "    rhodawk-agent --help"
+    fi
     echo "════════════════════════════════════════════════════"
     echo ""
 fi
