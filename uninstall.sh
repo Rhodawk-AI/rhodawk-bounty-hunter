@@ -142,7 +142,23 @@ uninstall_claude() {
     fi
     remove_tree_items "$SCRIPT_DIR/skills/*" "$root/skills" "Claude skill"
     remove_files "$SCRIPT_DIR/commands/*.md" "$root/commands" "Claude command"
-    remove_files "$SCRIPT_DIR/agents/*.md" "$root/agents" "Claude agent"
+    # Live-sandbox P2 fix: agents live in rhodawk/agents/ (the repo layout is
+    # mixed — install.sh resolves this via resolve_src), so the old root-level
+    # agents/*.md glob matched nothing and ~/.claude/agents/*.md survived
+    # every uninstall. Resolve exactly like install.sh; remove_files only
+    # ever deletes names that exist in the SOURCE dir, so unrelated user
+    # agents are preserved.
+    local agents_src
+    if [ -d "$SCRIPT_DIR/rhodawk/agents" ]; then
+        agents_src="$SCRIPT_DIR/rhodawk/agents"
+    elif [ -d "$SCRIPT_DIR/agents" ]; then
+        agents_src="$SCRIPT_DIR/agents"
+    else
+        agents_src=""
+    fi
+    if [ -n "$agents_src" ]; then
+        remove_files "$agents_src/*.md" "$root/agents" "Claude agent"
+    fi
     remove_claude_scope_guard "$root"
 }
 
@@ -192,12 +208,15 @@ os.replace(tmp, settings_path)
 print("+ Removed PreToolUse scope guard entry: %s" % settings_path)
 PY
     fi
-    local durable="${RHODAWK_HOME:-$HOME/.rhodawk}/hooks/hook_scope_guard.py"
-    remove_path "$durable" "durable PreToolUse scope guard copy"
+    local durable_dir="${RHODAWK_HOME:-$HOME/.rhodawk}/hooks"
+    remove_path "$durable_dir/hook_scope_guard.py" "durable PreToolUse scope guard copy"
+    # Live-sandbox P0 fix companion: drop the repo-root record the hook uses
+    # to resolve rhodawk imports (install.sh writes it as 0600).
+    remove_path "$durable_dir/.repo_root" "durable scope-guard repo-root record"
     # drop the hooks/ dir itself when nothing else lives there
-    if [ -d "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" ] \
-       && [ -z "$(find "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-        rmdir "${RHODAWK_HOME:-$HOME/.rhodawk}/hooks" 2>/dev/null || true
+    if [ -d "$durable_dir" ] \
+       && [ -z "$(find "$durable_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        rmdir "$durable_dir" 2>/dev/null || true
     fi
 }
 

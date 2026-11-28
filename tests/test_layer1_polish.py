@@ -498,3 +498,221 @@ def test_client_flag_rejected_for_other_agents(tmp_path):
     proc = _run_script(INSTALL, ["--agent", "claude", "--client", "claude"], env)
     assert proc.returncode == 2
     assert "only supported with --agent mcp" in proc.stderr
+
+
+# ── Live-sandbox P0/P1/P2 fixes: end-to-end regression tests ──────────────────
+
+sys.path.insert(0, str(REPO))
+from contracts.scope import CompiledScopeManifest  # noqa: E402
+
+_HOOK_ENV_CLEAN = {"PATH": "/usr/bin:/bin"}  # NO PYTHONPATH, NO HOME overrides
+
+
+def _write_scope_manifest(tmp_path: Path) -> str:
+    m = CompiledScopeManifest(program_handle="t",
+                              allow_patterns=["*.allowed.test"])
+    return str(m.save(str(tmp_path / "compiled_scope.json")))
+
+
+def _registered_hook_command(settings_path: Path) -> str:
+    settings = json.loads(settings_path.read_text())
+    cmds = [h["command"] for e in settings["hooks"]["PreToolUse"]
+            for h in e.get("hooks", [])
+            if "hook_scope_guard.py" in str(h.get("command", ""))]
+    assert cmds, "no scope-guard hook registered"
+    return cmds[0]
+
+
+def _run_hook_command(command: str, payload: dict) -> subprocess.CompletedProcess:
+    """Execute the EXACT command registered in settings.json, from /tmp,
+    with a clean environment (no PYTHONPATH) — the live-sandbox scenario."""
+    return subprocess.run(command, shell=True, cwd="/tmp",
+                          env=_HOOK_ENV_CLEAN, input=json.dumps(payload),
+                          capture_output=True, text=True, timeout=60)
+
+
+def _make_venv_with_repo(home: Path) -> tuple[Path, Path]:
+    """A managed venv that can import rhodawk/contracts/tools from the repo
+    (editable-install-equivalent via a .pth file — offline, deterministic),
+    plus the uninstall marker install.sh would leave behind."""
+    venv_dir = home / ".rhodawk" / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--system-site-packages",
+                    str(venv_dir)], check=True, capture_output=True, timeout=120)
+    (venv_dir / ".rhodawk-managed-venv").touch()
+    purelib = subprocess.run(
+        [str(venv_dir / "bin" / "python"), "-c",
+         "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+    (Path(purelib) / "rhodawk_repo.pth").write_text(f"{REPO}\n{REPO / 'rhodawk'}\n")
+    return venv_dir, venv_dir / "bin" / "python"
+
+
+def test_durable_hook_inscope_allow_oos_block_registered_venv_command(tmp_path):
+    """P0, venv variant: the EXACT command registered in settings.json (venv
+    interpreter) must run from /tmp with a clean env — allow in-scope,
+    block (exit 2, SCOPE_HOOK_BLOCK) out-of-scope. No ModuleNotFoundError."""
+    home = tmp_path / "home"
+    (home / ".rhodawk").mkdir(parents=True)
+    venv_dir, _venv_python = _make_venv_with_repo(home)
+    manifest = _write_scope_manifest(tmp_path)
+    env = _base_env(tmp_path)  # RHODAWK_SKIP_DEPS=1: venv reused, no pip/network
+    proc = _run_script(INSTALL, ["--agent", "claude"], env)
+    assert proc.returncode == 0, proc.stdout[-600:] + proc.stderr[-300:]
+
+    command = _registered_hook_command(home / ".claude" / "settings.json")
+    assert str(venv_dir / "bin" / "python") in command, \
+        "venv interpreter must be registered when the venv exists"
+
+    ok = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://app.allowed.test",
+                       "manifest_path": manifest}})
+    assert ok.returncode == 0, f"in-scope denied: {ok.stderr[-300:]}"
+    assert "ModuleNotFoundError" not in ok.stderr
+
+    oos = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://evil.test",
+                       "manifest_path": manifest}})
+    assert oos.returncode == 2, f"out-of-scope allowed: {oos.stdout[-300:]}"
+    assert "SCOPE_HOOK_BLOCK" in oos.stderr
+    assert "evil.test" in oos.stderr
+    assert "ModuleNotFoundError" not in oos.stderr and \
+        "Traceback" not in oos.stderr
+
+
+def test_durable_hook_works_via_repo_root_record_when_skip_deps(tmp_path):
+    """P0, .repo_root variant: with no venv at all (RHODAWK_SKIP_DEPS=1), the
+    hook registered with system python3 must still resolve rhodawk through
+    the .repo_root record — allow in-scope, block out-of-scope, from /tmp,
+    clean env."""
+    env = _base_env(tmp_path)  # no venv in this home
+    proc = _run_script(INSTALL, ["--agent", "claude"], env)
+    assert proc.returncode == 0, proc.stdout[-600:]
+
+    home = tmp_path / "home"
+    manifest = _write_scope_manifest(tmp_path)
+    durable = home / ".rhodawk" / "hooks" / "hook_scope_guard.py"
+    assert durable.is_file()
+    assert (home / ".rhodawk" / "hooks" / ".repo_root").is_file()
+
+    command = _registered_hook_command(home / ".claude" / "settings.json")
+    ok = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://app.allowed.test",
+                       "manifest_path": manifest}})
+    assert ok.returncode == 0, f"in-scope denied: {ok.stderr[-400:]}"
+    oos = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://evil.test",
+                       "manifest_path": manifest}})
+    assert oos.returncode == 2 and "SCOPE_HOOK_BLOCK" in oos.stderr
+
+
+def test_hook_fails_closed_without_traceback_when_repo_record_gone(tmp_path):
+    """P0, broken environment: bare system python3, .repo_root deleted, no
+    venv, rhodawk unimportable — the hook must NOT crash with an exit-1
+    traceback; it fails CLOSED (exit 2, SCOPE_HOOK_BLOCK) on active calls."""
+    env = _base_env(tmp_path)
+    proc = _run_script(INSTALL, ["--agent", "claude"], env)
+    assert proc.returncode == 0, proc.stdout[-600:]
+
+    home = tmp_path / "home"
+    (home / ".rhodawk" / "hooks" / ".repo_root").unlink()
+    manifest = _write_scope_manifest(tmp_path)
+    command = _registered_hook_command(home / ".claude" / "settings.json")
+
+    oos = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://evil.test",
+                       "manifest_path": manifest}})
+    assert oos.returncode == 2, \
+        f"expected fail-closed block, got {oos.returncode}: {oos.stderr[-400:]}"
+    assert "SCOPE_HOOK_BLOCK" in oos.stderr
+    # the regression this pins: no ImportError traceback / exit 1 crash
+    assert "Traceback" not in oos.stderr, oos.stderr[-400:]
+    assert "ModuleNotFoundError" not in oos.stderr, oos.stderr[-400:]
+
+    ok = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://app.allowed.test",
+                       "manifest_path": manifest}})
+    assert ok.returncode == 2, "contract unavailable ⇒ in-scope also blocks (fail-closed)"
+    assert "Traceback" not in ok.stderr
+
+
+def test_agent_all_full_stack_cli_venv_registration_doctor_and_warning(tmp_path):
+    """P1 end-to-end: --agent all < /dev/null links BOTH standalone commands,
+    registers the venv interpreter for the hook, the registered command
+    actually works from /tmp, `rhodawk doctor` reports [PASS] PreToolUse hook,
+    and a subsequent standalone uninstall warns about the dangling hook."""
+    home = tmp_path / "home"
+    (home / ".rhodawk").mkdir(parents=True)
+    venv_dir, _venv_python = _make_venv_with_repo(home)
+    manifest = _write_scope_manifest(tmp_path)
+    env = _base_env(tmp_path)
+    proc = _run_script(INSTALL, ["--agent", "all"], env)
+    assert proc.returncode == 0, proc.stdout[-800:] + proc.stderr[-400:]
+
+    bin_dir = tmp_path / "bin"
+    assert (bin_dir / "rhodawk").is_symlink()
+    assert (bin_dir / "rhodawk-agent").is_symlink()
+    assert "Standalone CLI" in proc.stdout  # closing summary lists the CLI
+
+    settings_path = home / ".claude" / "settings.json"
+    command = _registered_hook_command(settings_path)
+    assert str(venv_dir / "bin" / "python") in command, \
+        "venv interpreter must be registered (standalone runs FIRST now)"
+
+    ok = _run_hook_command(command, {
+        "tool_name": "Bash",
+        "tool_input": {"command": "nuclei -u https://app.allowed.test",
+                       "manifest_path": manifest}})
+    assert ok.returncode == 0, f"hook broken after --agent all: {ok.stderr[-400:]}"
+
+    doctor = subprocess.run([str(bin_dir / "rhodawk"), "doctor"],
+                            cwd="/tmp", env={**_HOOK_ENV_CLEAN,
+                                             "HOME": str(home),
+                                             "RHODAWK_HOME": str(home / ".rhodawk")},
+                            capture_output=True, text=True, timeout=120)
+    assert doctor.returncode == 0, doctor.stdout[-600:] + doctor.stderr[-300:]
+    pass_rows = [ln for ln in doctor.stdout.splitlines()
+                 if "PreToolUse hook" in ln]
+    assert pass_rows and "[PASS]" in pass_rows[0], doctor.stdout[-600:]
+
+    rm = _run_script(UNINSTALL, ["--agent", "standalone", "--yes"], env)
+    assert rm.returncode == 0, rm.stderr
+    assert not venv_dir.exists()
+    assert "[!] warning" in rm.stdout and "hook_scope_guard.py" in rm.stdout
+
+
+def test_claude_uninstall_removes_agents_and_repo_root_user_agents_survive(tmp_path):
+    """P2 end-to-end: uninstall --agent claude removes the installed agent
+    markdown files AND .repo_root alongside skills/commands/hook state,
+    while unrelated user agents in ~/.claude/agents/ survive."""
+    env = _base_env(tmp_path)
+    home = tmp_path / "home"
+    proc = _run_script(INSTALL, ["--agent", "claude"], env)
+    assert proc.returncode == 0, proc.stdout[-600:]
+
+    agents_dir = home / ".claude" / "agents"
+    installed = {p.name for p in agents_dir.glob("*.md")}
+    assert installed, "no agents installed — install did not run"
+    (agents_dir / "my-own-agent.md").write_text("# user agent\n")
+    assert (home / ".rhodawk" / "hooks" / ".repo_root").is_file(), \
+        "install must record .repo_root next to the durable hook copy"
+
+    rm = _run_script(UNINSTALL, ["--agent", "claude", "--yes"], env)
+    assert rm.returncode == 0, rm.stderr
+    remaining = {p.name for p in agents_dir.glob("*.md")}
+    assert remaining == {"my-own-agent.md"}, \
+        f"installed agents must be removed, user agents preserved: {remaining}"
+    assert "Claude agent" in rm.stdout
+    assert not (home / ".rhodawk" / "hooks" / ".repo_root").exists(), \
+        ".repo_root must be removed with the durable hook copy"
+    assert not (home / ".rhodawk" / "hooks" / "hook_scope_guard.py").exists()
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    guards = [e for e in settings["hooks"]["PreToolUse"]
+              if any("hook_scope_guard.py" in str(h.get("command", ""))
+                     for h in e.get("hooks", []))]
+    assert guards == []

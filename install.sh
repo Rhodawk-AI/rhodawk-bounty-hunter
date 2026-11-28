@@ -272,6 +272,16 @@ register_pretooluse_scope_guard() {
         chmod 700 "$durable_guard" 2>/dev/null || true
         echo "[+] durable scope-guard copy installed: $durable_guard (0700)"
         guard_active="$durable_guard"
+        # Live-sandbox P0 fix: record the source repo next to the durable
+        # copy (0600) so a bare-python3 run of the hook (RHODAWK_SKIP_DEPS=1
+        # installs, venv removed later, stripped env, cwd=/tmp) can still
+        # resolve rhodawk._compat / contracts.scope / scope_checker. The hook
+        # reads this record (or $RHODAWK_REPO_DIR) and prepends the repo to
+        # sys.path; if the repo is gone the hook fails CLOSED (exit 2)
+        # instead of crashing with a traceback.
+        if printf '%s\n' "$SCRIPT_DIR" > "$hooks_dir/.repo_root" 2>/dev/null; then
+            chmod 600 "$hooks_dir/.repo_root" 2>/dev/null || true
+        fi
     else
         echo "[!] could not install the durable scope-guard copy under $hooks_dir — registering the repo checkout path (breaks if the checkout moves)"
     fi
@@ -362,6 +372,16 @@ install_claude() {
     copy_tree_items "skills/*" "$root/skills" "skill"
     copy_files "commands/*.md" "$root/commands" "command"
     copy_files "$AGENTS_SRC/*.md" "$root/agents" "agent"
+    # Live-sandbox P0 fix: a Claude-only install used to register the scope
+    # guard with system python3 while no rhodawk package was importable, so
+    # EVERY gated tool call crashed with ModuleNotFoundError (exit 1). Build
+    # the managed venv FIRST (PEP 668-safe) so the registered interpreter can
+    # import rhodawk. With RHODAWK_SKIP_DEPS=1 (CI / offline) the hook falls
+    # back to the .repo_root record — and even if that record is lost too,
+    # the hook now fails CLOSED (exit 2), never crashes.
+    if [ "${RHODAWK_SKIP_DEPS:-0}" != "1" ]; then
+        ensure_managed_venv "$SCRIPT_DIR"
+    fi
     register_pretooluse_scope_guard "$root"
     echo "Done: $root"
 
@@ -743,8 +763,21 @@ install_mcp() {
     # Layer 1 polish (audit item 6): opt-in safe merge of the shipped MCP
     # client entry into ~/.claude/settings.json. Default (--client none)
     # stays fully non-invasive: instructions only.
+    # Live-sandbox P1 fix: the shipped entry uses the bare "rhodawk" command.
+    # On a fresh MCP-only box rhodawk is not on PATH yet, so Claude Code
+    # would get a broken server. Resolve it: prefer the venv CLI (absolute
+    # path), otherwise tell the user exactly how to fix PATH.
     if [ "$CLIENT_MERGE" = "claude" ]; then
-        merge_mcp_client_config claude
+        local merge_cli=""
+        if command -v rhodawk >/dev/null 2>&1; then
+            merge_cli=""   # resolvable as-is — keep the shipped entry
+        elif [ -n "${venv_dir:-}" ] && [ -x "${venv_dir}/bin/rhodawk" ]; then
+            merge_cli="${venv_dir}/bin/rhodawk"
+            echo "[*] rhodawk not on PATH — merging mcpServers with the venv CLI: $merge_cli"
+        else
+            merge_cli="__UNRESOLVED__"
+        fi
+        merge_mcp_client_config claude "$merge_cli"
     fi
     # NOTE: deliberately no "Done." here (Layer 1B Issue #4) — the reconFTW
     # capability-delegation setup and credential bootstrap run AFTER the agent
@@ -762,14 +795,19 @@ merge_mcp_client_config() {
     local root="$HOME/.claude"
     local settings="$root/settings.json"
     local src="$MCP_SRC/rhodawk-mcp/claude-config.json"
+    # Optional 2nd arg: absolute rhodawk CLI to substitute for the bare
+    # "rhodawk" command when it is not on PATH ("" = leave as shipped,
+    # "__UNRESOLVED__" = nothing to substitute — warn instead).
+    local mcp_cli="${2:-}"
     [ -f "$src" ] || { echo "[!] $src missing — cannot merge MCP client config"; return 0; }
-    python3 - "$settings" "$src" <<'PY' \
+    python3 - "$settings" "$src" "$mcp_cli" <<'PY' \
         || echo "[!] could not merge MCP client config into $settings (left unchanged)"
 import json
 import os
 import sys
 
 settings_path, src_path = sys.argv[1], sys.argv[2]
+mcp_cli = sys.argv[3] if len(sys.argv) > 3 else ""
 with open(src_path, encoding="utf-8") as fh:
     incoming = json.load(fh)
 inc_servers = incoming.get("mcpServers", {}) if isinstance(incoming, dict) else {}
@@ -798,6 +836,18 @@ if not isinstance(servers, dict):
 
 changed, skipped = [], []
 for key, entry in inc_servers.items():
+    entry = dict(entry)
+    # Live-sandbox P1 fix: a bare "rhodawk" command is only launchable when
+    # rhodawk is on PATH. Substitute the absolute venv CLI when available;
+    # otherwise warn loudly so the merged config is never silently broken.
+    if entry.get("command") == "rhodawk" and mcp_cli == "__UNRESOLVED__":
+        print("[!] 'rhodawk' is not on PATH and no venv CLI was found — the "
+              "merged mcpServers entry would not launch. fix: run "
+              "./install.sh --agent standalone (links rhodawk onto PATH) and "
+              "re-run ./install.sh --agent mcp --client claude, or add the "
+              "venv bin dir to PATH.", file=sys.stderr)
+    elif entry.get("command") == "rhodawk" and mcp_cli:
+        entry["command"] = mcp_cli
     if key in servers:
         if servers[key] == entry:
             continue  # already merged, identical — idempotent no-op
@@ -869,8 +919,13 @@ case "$AGENT" in
     all)
         # Layer 1 polish (audit item 7): --agent all runs every target and
         # closes with ONE per-target summary banner after the reconFTW setup.
+        # Live-sandbox P1 fix: standalone FIRST — it creates the managed venv
+        # and links rhodawk/rhodawk-agent onto PATH, so install_claude
+        # registers the venv interpreter (not bare python3) and `rhodawk
+        # doctor` works immediately after the install instead of exit 127.
         SETUP_BURP="no"
         DONE_BANNER=1
+        install_standalone
         install_claude
         install_antigravity
         install_opencode
@@ -1010,6 +1065,7 @@ if [ "${DONE_BANNER:-0}" = "1" ]; then
     elif [ "$AGENT" = "all" ]; then
         echo "  Done. All targets installed:"
         echo ""
+        echo "    Standalone CLI: ${RHODAWK_BIN_DIR:-/usr/local/bin}/rhodawk (+ rhodawk-agent)"
         echo "    Claude Code   : $HOME/.claude"
         echo "    Antigravity   : ${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/config}"
         echo "    OpenCode      : ${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
