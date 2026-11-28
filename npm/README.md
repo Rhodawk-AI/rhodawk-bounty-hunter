@@ -20,7 +20,7 @@ AI-powered bug bounty hunting, recon to report, in your terminal.**
 Python package [`rhodawk-bounty-hunter`](https://pypi.org/project/rhodawk-bounty-hunter/).
 It resolves and runs the `rhodawk` engine — fail-closed, CDN-aware autonomous
 bug bounty reconnaissance and attack-surface prioritization — and falls back to
-`pipx run` when the Python package is not installed yet.
+`uvx` / `pipx run` when the Python package is not installed yet.
 
 ## Install
 
@@ -36,9 +36,14 @@ The wrapper exposes a single binary: `rhodawk`.
 
 1. If a real `rhodawk` is already on `PATH` (pipx / uv tool / source install),
    it is executed directly.
-2. Otherwise the wrapper delegates to `pipx run --spec rhodawk-bounty-hunter rhodawk`.
+2. Otherwise the wrapper delegates to
+   `uvx --from rhodawk-bounty-hunter rhodawk` when `uvx` is available, else to
+   `pipx run --spec rhodawk-bounty-hunter rhodawk`. The wrapper's own install
+   directory (e.g. npx's temporary `node_modules/.bin`) is stripped from the
+   child `PATH`, so neither runner mistakes the wrapper itself for an
+   installed `rhodawk` and no "already on your PATH" warning is printed.
 3. If neither is possible, it prints install instructions for
-   [pipx](https://pipx.pypa.io/) and the
+   [uv](https://docs.astral.sh/uv/) / [pipx](https://pipx.pypa.io/) and the
    [PyPI package](https://pypi.org/project/rhodawk-bounty-hunter/).
 
 ## First run
