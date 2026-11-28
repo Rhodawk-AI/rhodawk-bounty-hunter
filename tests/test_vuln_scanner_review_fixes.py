@@ -20,6 +20,10 @@ def test_scanner_uses_current_repo_paths():
     scanner = SCANNER_PATH.read_text()
 
     assert 'BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"' in scanner
-    assert 'DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET"' in scanner
+    # Layer 2 hardening: the findings default moved out of the repo tree
+    # ($BASE_DIR/findings polluted a git clone during an unscoped-run test)
+    # into the runtime data home, same ${RHODAWK_HOME:-$HOME/.rhodawk}
+    # contract as engine/hunt. FINDINGS_OUT_DIR remains the explicit override.
+    assert 'DEFAULT_FINDINGS_DIR="$_RHODAWK_DATA_HOME/findings/$TARGET"' in scanner
     assert 'head -20 "$RECON_DIR/live/urls.txt"' in scanner
     assert "httpx_live.txt" not in scanner

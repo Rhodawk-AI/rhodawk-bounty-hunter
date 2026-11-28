@@ -841,6 +841,13 @@ def cmd_hunt(args):
     vuln_script = TOOLS / "vuln_scanner.sh"
     if vuln_script.exists() and recon_dir.exists():
         info("Phase 2: Vuln scan...")
+        # Layer 2 hardening: tools/_scope_gate.sh now fails closed when no
+        # compiled manifest resolves. An explicit --no-scope-check hunt stays
+        # a seamless authorized local-testing flow by propagating the opt-out
+        # downstream (the gate still prints its visible bypass warning; a
+        # tampered manifest still hard-stops).
+        if getattr(args, "no_scope_check", False):
+            os.environ["RHODAWK_SCOPE_UNSAFE"] = "1"
         _run_shell(["bash", str(vuln_script), str(recon_dir)])
 
     # AI analysis
@@ -1563,8 +1570,8 @@ def main():
         "handle",
         help="Program handle or full program URL — the platform is "
              "auto-detected from the URL for HackerOne, Bugcrowd, Intigriti "
-             "and YesWeHack (e.g. cloudflare, "
-             "https://hackerone.com/cloudflare?type=team, "
+             "and YesWeHack (e.g. acme, "
+             "https://hackerone.com/acme?type=team, "
              "https://bugcrowd.com/engagements/<slug>, "
              "https://app.intigriti.com/researcher/program/<c>/<p>, "
              "https://yeswehack.com/programs/<id>; a bare handle compiles "

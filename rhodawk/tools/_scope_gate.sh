@@ -11,8 +11,13 @@
 #         2. <recon_dir>/scope/compiled_scope.json (session artifact);
 #         3. ${RHODAWK_HOME:-~/.rhodawk}/recon/<target>/scope/compiled_scope.json
 #            (target-derived default, same keying as rtw_adapter.manifest_path).
-#       No manifest resolvable -> gate stays inactive (returns 0; the upstream
-#       caller — recon_engine.sh / hunt.py — is the gate for that case).
+#       No manifest resolvable -> FAIL CLOSED (returns 3; JSONL audit entry;
+#       0 probes). The operator must run `rhodawk scope-compile <handle>`,
+#       set RHODAWK_SCOPE_MANIFEST, or explicitly opt out for authorized
+#       local testing via RHODAWK_SCOPE_UNSAFE=1 (a visible warning goes to
+#       stderr whenever the bypass is active). The bypass NEVER skips
+#       integrity validation: a manifest that resolves and then fails the
+#       SHA-256 check is still a hard stop.
 #       A manifest that is MISSING or FAILS the SHA-256 integrity check is a
 #       hard stop: audited to hunt-memory/audit.jsonl, returns 3 (caller exits).
 #
@@ -81,7 +86,24 @@ rhodawk_scope_gate_init() {
         fi
     fi
 
-    [ -n "$_SCOPE_GATE_MANIFEST" ] || return 0
+    if [ -z "$_SCOPE_GATE_MANIFEST" ]; then
+        # Layer 2 hardening (live-sandbox finding): with no compiled scope
+        # manifest resolvable, the old behavior was FAIL-OPEN (gate inactive,
+        # return 0) — scanners then probed with zero scope validation. Fail
+        # closed instead; RHODAWK_SCOPE_UNSAFE=1 is the explicit opt-out for
+        # authorized local testing and still prints a visible warning.
+        if [ "${RHODAWK_SCOPE_UNSAFE:-}" = "1" ]; then
+            echo "[!] SCOPE GATE BYPASSED: RHODAWK_SCOPE_UNSAFE=1 — running UNSCOPED (authorized local testing only). No scope constraints apply." >&2
+            return 0
+        fi
+        echo "[-] SCOPE BLOCK: no compiled scope manifest resolved for target '${_SCOPE_GATE_TARGET:-<none>}' — 0 probes sent (fail-closed)." >&2
+        echo "    To authorize scanning, run:  rhodawk scope-compile <handle>" >&2
+        echo "    (writes <recon_dir>/scope/compiled_scope.json), or set" >&2
+        echo "    RHODAWK_SCOPE_MANIFEST=/path/to/compiled_scope.json, or set" >&2
+        echo "    RHODAWK_SCOPE_UNSAFE=1 to opt out explicitly for authorized local testing." >&2
+        _rhodawk_scope_audit_block "no compiled scope manifest resolved — run blocked (fail-closed)"
+        return 3
+    fi
 
     if [ ! -f "$_SCOPE_GATE_MANIFEST" ]; then
         echo "[-] SCOPE BLOCK: scope manifest not found: $_SCOPE_GATE_MANIFEST" >&2

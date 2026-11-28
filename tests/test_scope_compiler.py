@@ -621,7 +621,9 @@ class TestCompileAndSave:
         primary = Path(summary["manifest"])
         mirror = Path(summary["mirror"])
         assert primary == tmp_path / "recon" / "scope" / "compiled_scope.json"
-        assert mirror == tmp_path / ".rhodawk" / "scope" / \
+        # Layer 2 hardening: the mirror honors $RHODAWK_HOME (conftest pins it
+        # to tmp_path/rhodawk-home) instead of the old hardcoded ~/.rhodawk.
+        assert mirror == Path(os.environ["RHODAWK_HOME"]) / "scope" / \
             "cloudflare_compiled_scope.json"
         assert primary.exists() and mirror.exists()
         assert summary["manifest_sha256"] == \
