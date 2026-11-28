@@ -22,10 +22,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ── v2.0.0 data-directory migration: pre-2.0 home -> ~/.rhodawk ──────────
-# The retired home name is assembled from fragments so the literal never
-# re-enters the tree (the release branding gate greps for it verbatim).
-_rhw_seg1="bu"; _rhw_seg2="ghunter"
-_rhw_legacy="$HOME/.${_rhw_seg1}${_rhw_seg2}"
+# B-10: the retired home name is written as an explicit literal. The only
+# branding gate in the repo (tests/test_layer1_polish.py) scans for the
+# retired product NAME — never this directory — so the old fragment
+# assembly protected nothing and only obscured the migration logic.
+_rhw_legacy="$HOME/.bughunter"
 if [ -d "$_rhw_legacy" ] && [ ! -d "$HOME/.rhodawk" ]; then
     mv "$_rhw_legacy" "$HOME/.rhodawk" \
         || echo "[!] could not migrate pre-2.0 data home to ~/.rhodawk"

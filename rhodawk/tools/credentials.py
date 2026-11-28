@@ -236,6 +236,25 @@ def redact_env_for_scanners(env: dict) -> dict:
     The input dict is never mutated."""
     strip = set(secret_env_vars_to_strip())
     return {k: v for k, v in env.items() if k not in strip}
+
+
+def safe_scanner_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Single shared child-env builder for every scanner/tool spawn (B-1).
+
+    The MCP adapters (tools/mcp run_recon/run_hunt) and the RTW delegation
+    used to pass os.environ.copy() to subprocesses unredacted, so vault /
+    platform / LLM secrets leaked to every child on those paths. Route ALL
+    spawns through here instead: redact_env_for_scanners() over a copy of
+    os.environ, then merge explicit child-only overrides.
+
+    os.environ itself is never mutated — a later call in the same process
+    must not observe an earlier child's overrides (e.g. RHODAWK_SCOPE_UNSAFE
+    leaking from a --no-scope-check hunt into unrelated subprocesses)."""
+    env = redact_env_for_scanners(os.environ.copy())
+    if extra:
+        env.update({k: v for k, v in extra.items() if v is not None})
+    return env
+
 # H1_TOKEN is an input alias (H1_TOKEN=user:token), not a stored vault key.
 _LOOKUP_VARS = ALL_MANAGED_VARS + ["H1_TOKEN"]
 
@@ -618,9 +637,17 @@ def verify_h1_auth(username: str, token: str,
                    timeout: float = 10.0) -> tuple[int, str]:
     """Live-check H1 REST credentials with HTTP Basic auth.
 
-    Returns (http_code, "VALID"|"INVALID"). HTTP 200 -> VALID, anything
-    else -> INVALID. The Authorization header (which carries the secret) is
-    never printed, logged, or included in error messages."""
+    Returns (http_code, verdict) where verdict is:
+      - "VALID":       HTTP 200 — the API accepted the credential pair;
+      - "INVALID":     an HTTP error status (401/403/...) — the API ANSWERED,
+                       so the pair is genuinely bad;
+      - "UNREACHABLE": a network-level failure (DNS, timeout, connection
+                       refused). NO verdict is possible — an offline operator
+                       must not be locked out of working credentials (B-11:
+                       the old code collapsed this into "INVALID").
+
+    The Authorization header (which carries the secret) is never printed,
+    logged, or included in error messages."""
     if not username or not token:
         return 0, "INVALID"
     auth = base64.b64encode(f"{username}:{token}".encode("utf-8")).decode("ascii")
@@ -633,14 +660,15 @@ def verify_h1_auth(username: str, token: str,
         code = _http_request(H1_VERIFY_URL, headers, timeout)
     except urllib.error.HTTPError as exc:
         code = int(exc.code)
-    except Exception:
-        # Network unreachable / timeout / DNS failure: no verdict possible.
-        return 0, "INVALID"
+    except OSError:
+        # URLError (DNS / refused), socket timeouts, connection resets: the
+        # API never answered, so there is nothing to validate against.
+        return 0, "UNREACHABLE"
     return code, ("VALID" if code == 200 else "INVALID")
 
 
 def _print_h1_auth_line(values: dict[str, str]) -> str | None:
-    """Print the one-line H1 verdict — `H1_AUTH: HTTP <code> (VALID|INVALID)`
+    """Print the one-line H1 verdict — `H1_AUTH: HTTP <code> (VALID|INVALID|UNREACHABLE)`
     — and return it, only when both H1 credential parts are configured."""
     username = values.get("H1_USERNAME", "")
     token = values.get("H1_API_TOKEN", "")
@@ -683,7 +711,7 @@ def run_interactive_onboarding(input_fn=None, getpass_fn=None) -> dict[str, str]
        populated if configured, blank (KEY="") if skipped — organized by
        commented tool sections.
     4. Live-checks H1 credentials when both parts were provided, printing
-       only `H1_AUTH: HTTP <code> (VALID|INVALID)`.
+       only `H1_AUTH: HTTP <code> (VALID|INVALID|UNREACHABLE)`.
     5. Prints the redacted READY / SKIPPED (blank) / KEYLESS summary.
 
     Returns the final values dict (secrets included — callers must not
@@ -731,7 +759,7 @@ def load_credentials(interactive: bool = False,
     credentials are present, else "keyless_public"), vault path, source
     files, per-group status, configured/blank variable names. When
     verify_live=True and H1 credentials are present, adds "h1_auth":
-    "HTTP <code> (VALID|INVALID)".
+    "HTTP <code> (VALID|INVALID|UNREACHABLE)".
     """
     values, sources = _resolve_all()
     _export_nonempty(values)

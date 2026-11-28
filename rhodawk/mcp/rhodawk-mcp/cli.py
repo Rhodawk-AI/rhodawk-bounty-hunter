@@ -18,7 +18,12 @@ except ImportError:  # flat / script execution — resolve package dir
     from _compat import get_env, ensure_home_migrated
 
 _DIR = Path(__file__).resolve().parent
-_REPO = _DIR.parents[1]
+# B-2: _DIR.parents[1] is the rhodawk/ PACKAGE dir (needed for the flat
+# `tools.*` imports below and for listing sibling integrations under
+# <pkg>/mcp/), while the actual repository root is parents[2] — doctor used
+# to print the package dir labeled as "repo:".
+_PKG_DIR = _DIR.parents[1]
+_REPO = _DIR.parents[2]
 
 
 def cmd_tools() -> int:
@@ -44,6 +49,8 @@ def cmd_doctor() -> int:
     print(f"repo: {_REPO}")
     if str(_REPO) not in sys.path:
         sys.path.insert(0, str(_REPO))
+    if str(_PKG_DIR) not in sys.path:
+        sys.path.insert(0, str(_PKG_DIR))
     ok = True
 
     # SDK
@@ -89,7 +96,7 @@ def cmd_doctor() -> int:
 
     # sibling integrations
     for name in ("burp-mcp-client", "caido-mcp-client", "hackerone-mcp"):
-        p = _REPO / "mcp" / name
+        p = _PKG_DIR / "mcp" / name
         print(f"[*] sibling {name}: {'ok' if p.exists() else 'missing'}")
 
     print("[+] approve env RHODAWK_MCP_APPROVE=" + os.environ.get("RHODAWK_MCP_APPROVE", "(unset)"))
