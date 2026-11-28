@@ -1345,8 +1345,16 @@ if [ "$JS_CRAWL" = "1" ]; then
             log_step "No live URLs yet — seeding the crawl with the target itself ($_js_seed)"
         fi
         if [ -s "$_js_seeds" ]; then
+            # B-8: build the argv as a proper Bash array — the old
+            # unquoted $(sed | tr) word-splitting both mangled any seed
+            # containing whitespace and ran glob expansion over `*` in URLs.
+            _js_crawl_args=()
+            while IFS= read -r _js_seed_url; do
+                [ -n "$_js_seed_url" ] || continue
+                _js_crawl_args+=("--url" "$_js_seed_url")
+            done < "$_js_seeds"
             if python3 "$BASE_DIR/tools/js_crawl.py" \
-                    $(sed 's/^/--url /' "$_js_seeds" | tr '\n' ' ') \
+                    ${_js_crawl_args[@]+"${_js_crawl_args[@]}"} \
                     --recon-dir "$RECON_DIR" \
                     ${_js_crawl_scope_args[@]+"${_js_crawl_scope_args[@]}"} \
                     --max-pages 10 --timeout 180; then

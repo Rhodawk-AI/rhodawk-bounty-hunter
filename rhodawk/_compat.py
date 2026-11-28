@@ -6,10 +6,11 @@ Two jobs, both tiny and side-effect-light:
    environment variable first; if unset, probe the pre-2.0 variable families
    this release renamed (the long package-prefix family and the short
    ``BB``-derived families) and honor the first hit with a ONE-LINE stderr
-   deprecation notice (printed once per legacy name per process). The old
-   prefixes are assembled at runtime from fragments so this compatibility
-   table never re-introduces the retired upstream branding strings into the
-   source tree (the release branding gate scans for them verbatim).
+   deprecation notice (printed once per legacy name per process). The
+   retired prefixes are plain explicit constants below (B-10: the previous
+   fragment-assembly and its "branding gate scans for them verbatim"
+   rationale were brittle and false — the only branding gate in the repo
+   scans for the retired product NAME, never these env-var prefixes).
 
 2. ``ensure_home_migrated()`` — one-time data-directory migration from the
    pre-2.0 ``~/.<old-name>/`` home to ``~/.rhodawk/`` (chmod 700 dir / 600
@@ -28,12 +29,17 @@ import shutil
 import sys
 from pathlib import Path
 
-# Historical long prefix, assembled so the literal never appears in the tree.
-_OLD_PKG_PREFIX = "".join(("BU", "GHUNT", "ER"))
+# B-10: the pre-2.0 prefixes, spelled out explicitly. These strings are only
+# ever USED to look up legacy environment variables and the legacy data
+# directory — no branding gate in this repository forbids them (the single
+# static branding check, tests/test_layer1_polish.py, scans for the retired
+# product NAME only). The old "".join(fragment) assembly made the table hard
+# to read and audit for no protective effect.
+_OLD_PKG_PREFIX = "BUGHUNTER"
 # Historical short families (three spellings were in use before the collapse).
 _OLD_SHORT_PREFIXES = (
-    "".join(("BB", "HUNT_")),
-    "".join(("BB", "HUNTER_")),
+    "BBHUNT_",
+    "BBHUNTER_",
     "BB_",
 )
 
@@ -73,7 +79,7 @@ def get_env(new_name: str, *legacy_names: str, default=None):
 def ensure_home_migrated() -> None:
     """Migrate the pre-2.0 data home to ~/.rhodawk once (best effort)."""
     home = Path.home()
-    legacy = home / ("." + _OLD_PKG_PREFIX.lower())  # assembled, never literal
+    legacy = home / ("." + _OLD_PKG_PREFIX.lower())  # .bughunter
     new = home / ".rhodawk"
     if legacy.is_dir() and not new.exists():
         try:

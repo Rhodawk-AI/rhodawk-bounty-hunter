@@ -67,6 +67,19 @@ def _sys_path() -> None:
         sys.path.insert(0, root)
 
 
+def _safe_scanner_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """B-1: the ONE redacted child-env builder (tools.credentials).
+
+    Deferred import like every other package module here — the MCP server
+    process must never hand os.environ to a subprocess unredacted."""
+    _sys_path()
+    try:
+        from tools.credentials import safe_scanner_env
+    except ImportError:  # pragma: no cover - installed-package layout
+        from rhodawk.tools.credentials import safe_scanner_env
+    return safe_scanner_env(extra)
+
+
 def _build_checker(domains: list[str] | None, excluded: list[str] | None = None):
     """Build the ONE authoritative ScopeChecker (same class the agent path uses),
     or None if no domains / a dangerous config. Never a second implementation."""
@@ -163,11 +176,14 @@ def run_recon(target: str, *, timeout: int = 600, scope_checker=None) -> dict[st
         recon_dir = _safe_under(_recon_root(), target)
     except UnsafeTargetError as exc:
         return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc)}
-    env = os.environ.copy()
-    env["RHODAWK_TARGET"] = target
-    # Pin the output dir to the contained path so recon_engine.sh cannot be
-    # steered outside the data home's recon root by a crafted target.
-    env["RECON_OUT_DIR"] = str(recon_dir)
+    # B-1: was os.environ.copy() unredacted — vault/platform/LLM secrets
+    # leaked to every recon subprocess spawned through the MCP adapter.
+    env = _safe_scanner_env({
+        "RHODAWK_TARGET": target,
+        # Pin the output dir to the contained path so recon_engine.sh cannot
+        # be steered outside the data home's recon root by a crafted target.
+        "RECON_OUT_DIR": str(recon_dir),
+    })
     # Forward the policy engine's ScopeChecker patterns so the reconFTW
     # gap-fill (recon_engine.sh Phases 1.5/5.5) runs under the same fail-closed
     # scope as every other MCP tool. No checker → delegation fails closed
@@ -356,6 +372,9 @@ def run_hunt(target: str, *, quick: bool = False, timeout: int = 900, scope_chec
             proc = subprocess.run(
                 ["bash", str(scanner), target],
                 cwd=str(REPO), capture_output=True, text=True, timeout=timeout,
+                # B-1: no env= here meant the child inherited the FULL server
+                # process environment — same secret-leak class as run_recon.
+                env=_safe_scanner_env(),
             )
             return {
                 "status": "completed" if proc.returncode == 0 else "failed",

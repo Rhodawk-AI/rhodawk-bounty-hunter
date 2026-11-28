@@ -24,16 +24,28 @@ Behaviour (fail-closed, deterministic -- no judgment calls):
          command string itself;
       3. ``tool_input["manifest_path"]`` (MCP tools carry it);
       4. ``$RHODAWK_SCOPE_MANIFEST`` environment variable;
-      5. target-derived default location:
-         ``recon/<target>/scope/compiled_scope.json``;
-      6. otherwise: a ``recon/*/scope/compiled_scope.json`` glob -- allowed
-         only when exactly one manifest exists (ambiguous -> block).
+      5. target-derived default location, anchored to the runtime data home
+         (B-4: never an attacker-plantable ``Path.cwd()``):
+         ``${RHODAWK_HOME:-~/.rhodawk}/recon/<target>/scope/compiled_scope.json``;
+      6. otherwise: a ``recon/*/scope/compiled_scope.json`` glob under the
+         data home (``$RHODAWK_HOME`` — CWD only when it lives INSIDE the
+         data home) -- allowed only when exactly one manifest exists
+         (ambiguous -> block).
 
     The resolved file must load through
     ``CompiledScopeManifest.load(..., require_valid_hash=True)`` (SHA-256
     integrity). Missing file, tampered content, or an unloadable contract
     -> ``exit 2`` with a ``SCOPE_HOOK_BLOCK`` message on stderr (Claude Code
     surfaces stderr + exit 2 back to the model as a tool-call block).
+
+B-3: raw network one-liners in Bash calls are ACTIVE work, not read-only —
+``nc`` / ``ncat`` / ``socat`` / ``openssl s_client`` and
+``python[23] -c "import urllib|requests|http.client|httpx|socket ..."``
+classify as ``active`` and require the same verified manifest as scanners.
+B-3/B-4: ``curl`` / ``wget`` to a NON-loopback host with NO resolvable
+manifest now fails closed (``exit 2``); loopback and non-URL fetches stay
+allowed, and ``RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH=1`` is the explicit opt-in
+for authorized unscoped fetches.
 
 Exit codes: ``0`` allow, ``2`` block (including an unparseable or non-object
 stdin payload — fail closed), ``1`` internal usage error.
@@ -246,6 +258,55 @@ _SCANNER_TARGET_FLAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# B-3: raw network one-liners. nc/ncat/socat/`openssl s_client` are arbitrary
+# socket clients (connect, bind shells, TLS tunnels) — they were classified
+# "readonly" and bypassed the hook entirely. Same command-position + version
+# probe semantics as the scanner regex.
+_NET_CLIENT_RE = re.compile(
+    r"(?:^|[\n;|&]|\$\(|`|\(|\{|['\"])\s*"
+    r"(?:[~\w./+-]*/)?(?:nc|ncat|socat)(?![\w.-])"
+)
+# version/help probes (nc -h, ncat --help, socat -V) stay benign — same
+# contract as the active-scanner regex.
+_NET_CLIENT_PROBE_RE = re.compile(
+    r"(?:^|[\n;|&]|\$\(|`|\(|\{|['\"])\s*"
+    r"(?:[~\w./+-]*/)?(?:nc|ncat|socat)\s+"
+    r"(?:-{1,2}(?:version|h|help|V))(?![\w-])"
+)
+_OPENSSL_S_CLIENT_RE = re.compile(r"\bopenssl\s+s_client\b")
+# python/python3 -c one-liners whose CODE imports a network library — the
+# quoted argument is inspected, so `echo "import urllib"` never matches.
+_PY_C_RE = re.compile(r"\bpython[0-9wx.]*\s+-c\s*(?:'([^']*)'|\"([^\"]*)\")")
+_NET_LIB_MARKERS = ("urllib", "requests", "http.client", "httpx", "socket")
+
+
+def python_net_oneliner(command: str) -> bool:
+    """True when a `python[23] -c <code>` argument references a network lib.
+
+    B-3: `python3 -c "import urllib.request; ..."` fetched arbitrary hosts
+    while classified read-only. Only the quoted code of a real -c invocation
+    counts; plain mentions in echo/args do not."""
+    for match in _PY_C_RE.finditer(command or ""):
+        code = match.group(1) or match.group(2) or ""
+        if any(marker in code for marker in _NET_LIB_MARKERS):
+            return True
+    return False
+
+
+def network_one_liner(command: str) -> str | None:
+    """Return the offending tool when the command drives raw network I/O
+    (nc/ncat/socat/openssl s_client or a python -c network one-liner).
+    Version/help probes (nc -h) stay benign, mirroring scanner_invocation."""
+    if _NET_CLIENT_PROBE_RE.search(command or ""):
+        return None
+    if _NET_CLIENT_RE.search(command or ""):
+        return "nc/ncat/socat"
+    if _OPENSSL_S_CLIENT_RE.search(command or ""):
+        return "openssl s_client"
+    if python_net_oneliner(command or ""):
+        return "python -c network one-liner"
+    return None
+
 
 def scanner_invocation(command: str) -> str | None:
     """Return the scanner binary name when `command` really invokes one.
@@ -282,12 +343,17 @@ def classify(tool_name: str, tool_input: dict) -> str:
             # returns None for them so they stay read-only.
             if scanner_invocation(command):
                 return "active"
+            # B-3: raw network one-liners (nc/ncat/socat/openssl s_client,
+            # python -c urllib/requests/socket/...) are active network work,
+            # not read-only — previously they bypassed the hook entirely.
+            if network_one_liner(command):
+                return "active"
             if CURL_WGET_RE.search(command):
-                # Fix 2: bare curl/wget IS network work. Classified as
-                # "fetch": checked against a RESOLVABLE manifest when one
-                # exists (out-of-scope URL host ⇒ blocked); without any
-                # manifest the documented allow behavior is unchanged, so
-                # installers / doctor Bash usage keeps working.
+                # Fix 2 + B-3: bare curl/wget IS network work. Classified as
+                # "fetch": with a RESOLVABLE manifest, out-of-scope URL hosts
+                # are blocked; without one, fetches to NON-loopback hosts now
+                # FAIL CLOSED (loopback + non-URL fetches stay allowed;
+                # RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH=1 is the explicit opt-in).
                 return "fetch"
 
     return "readonly"  # read-only and unknown tools are non-target -> allow
@@ -325,6 +391,18 @@ def _normalize_target(raw: str) -> str:
     return raw
 
 
+def _data_home() -> Path:
+    """Runtime data home: $RHODAWK_HOME when set, else ~/.rhodawk.
+
+    B-4: manifest auto-discovery anchors here (and only here, plus a CWD
+    that itself lives inside the data home) so a self-consistent manifest
+    planted in an arbitrary working directory can never self-authorize."""
+    env = get_env("RHODAWK_HOME", default="")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
+    return Path.home() / ".rhodawk"
+
+
 def _expand_relative(candidate: str):
     """Yield absolute paths for a possibly-relative manifest path."""
     expanded = os.path.expanduser(candidate)
@@ -334,6 +412,9 @@ def _expand_relative(candidate: str):
         return
     yield Path.cwd() / p
     yield REPO_ROOT / p
+    # B-4: also try the data home for relative explicit paths — an operator
+    # may pass a data-home-relative manifest from any working directory.
+    yield _data_home() / p
 
 
 def resolve_manifest(explicit, tool_input, command, env) -> tuple:
@@ -370,10 +451,22 @@ def resolve_manifest(explicit, tool_input, command, env) -> tuple:
         target = _extract_target(command)
     target = _normalize_target(target)
     if target:
-        derived = f"recon/{target}/{MANIFEST_REL}"
-        return derived, None, f"target-derived ({target})"
-    # 6. exactly one manifest under recon/ (ambiguous -> block)
-    base_roots = [Path.cwd(), REPO_ROOT]
+        # B-4: anchored to the data home — the old CWD-relative
+        # `recon/<target>/scope/compiled_scope.json` let a planted
+        # self-consistent manifest in an arbitrary working directory
+        # self-authorize any active tool.
+        derived = _data_home() / "recon" / target / MANIFEST_REL
+        return str(derived), None, f"target-derived ({target}, data home)"
+    # 6. exactly one manifest under recon/ — anchored to the data home
+    # (B-4); a CWD outside the data home is never trusted as a glob root.
+    base_roots = [_data_home()]
+    try:
+        cwd = Path.cwd().resolve()
+        home = _data_home().resolve()
+        if cwd == home or home in cwd.parents:
+            base_roots.append(cwd)
+    except OSError:
+        pass
     seen = set()
     matches = []
     for root in base_roots:
@@ -452,6 +545,28 @@ def _out_of_scope_fetch_urls(command: str, checker) -> list:
         except Exception:  # noqa: BLE001 — uncheckable URL: fail-closed
             hosts_out.append(url)
     return hosts_out
+
+
+# B-3: loopback hosts are benign fetch targets (local doctor/API servers);
+# everything else needs a manifest or the explicit opt-in.
+_LOOPBACK_HOST_RE = re.compile(
+    r"^(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[?::1\]?|0\.0\.0\.0)(?::\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def _external_fetch_urls(command: str) -> list:
+    """http(s) URLs in a fetch command whose host is NOT loopback (B-3)."""
+    out = []
+    for url in _HTTP_URL_RE.findall(command or ""):
+        try:
+            host = (urlparse(url).netloc or "").split("@")[-1]
+        except Exception:  # noqa: BLE001 — unparseable: treat as external
+            out.append(url)
+            continue
+        if not host or not _LOOPBACK_HOST_RE.match(host.strip()):
+            out.append(url)
+    return out
 
 
 def _out_of_scope_scanner_targets(command: str, checker) -> list:
@@ -575,7 +690,23 @@ def main(argv=None) -> int:
                       f"`rhodawk scope-compile <handle>` if the "
                       f"program scope changed.", file=sys.stderr)
                 return 2
-        return 0  # no manifest resolvable / non-URL fetch: unchanged behavior
+            return 0  # in-scope / loopback / non-URL fetch: allowed
+        # B-3 fail-closed: NO manifest resolvable + a NON-loopback fetch
+        # target. The old behavior allowed any curl/wget through (installers
+        # / doctor convenience), which let a model probe arbitrary hosts with
+        # zero scope validation. Loopback + non-URL fetches stay allowed;
+        # RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH=1 is the explicit opt-in.
+        external = _external_fetch_urls(command)
+        if external and get_env("RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH",
+                                default="").strip() != "1":
+            print(f"{BLOCK_PREFIX}: curl/wget to non-loopback target(s) "
+                  f"{', '.join(sorted(set(external)))} denied — no compiled "
+                  f"scope manifest resolved. Run `rhodawk scope-compile "
+                  f"<handle>`, pass --manifest / RHODAWK_SCOPE_MANIFEST, or "
+                  f"set RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH=1 to explicitly "
+                  f"authorize unscoped fetches.", file=sys.stderr)
+            return 2
+        return 0  # loopback / non-URL fetch / explicit opt-in: allowed
     if classification != "active":
         return 0  # read-only / non-target: allow without checks
 

@@ -113,8 +113,10 @@ def test_scope_compiler_mirror_under_rhodawk_home_never_home_dot_rhodawk(
     out = scope_compiler.resolve_output_paths("acme")
     assert out["mirror"] == rh_home / "scope" / "acme_compiled_scope.json"
     assert home_a / ".rhodawk" not in out["mirror"].parents
-    # primary resolution stays compatible with tests/test_scope_compiler.py
-    assert out["primary"] == Path("recon") / "acme" / "scope" / \
+    # B-7: the standalone primary default anchors to $RHODAWK_HOME — the old
+    # CWD-relative Path("recon")/<handle> wrote a recon tree wherever the
+    # caller happened to stand (incl. the package source tree).
+    assert out["primary"] == rh_home / "recon" / "acme" / "scope" / \
         "compiled_scope.json"
 
     monkeypatch.setenv("RECON_OUT_DIR", str(tmp_path / "out"))

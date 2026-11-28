@@ -1010,19 +1010,22 @@ def fetch_program_scope(handle_or_url: str, *, creds: dict | None = None,
 # ── Compilation + output ──────────────────────────────────────────────────────
 
 def resolve_output_paths(handle: str, output=None) -> dict:
-    """Primary manifest path (--output / RECON_OUT_DIR / recon/<handle>) + mirror."""
+    """Primary manifest path (--output / RECON_OUT_DIR / <data home>/recon/<handle>) + mirror."""
+    # Layer 2 + B-7: every runtime write anchors to $RHODAWK_HOME (the
+    # engine._data_home / hunt._bh_home contract) — the mirror lives under
+    # <home>/scope and the standalone primary default under
+    # <home>/recon/<handle>. The old CWD-relative `Path("recon") / handle`
+    # wrote a recon tree into whatever directory the operator (or a model)
+    # happened to stand in — including the package source tree.
+    home_env = os.environ.get("RHODAWK_HOME", "").strip()
+    data_home = Path(home_env).expanduser() if home_env else Path.home() / ".rhodawk"
     if output:
         primary = Path(output).expanduser()
     else:
         env = os.environ.get("RECON_OUT_DIR", "").strip()
-        base = Path(env).expanduser() if env else Path("recon") / handle
+        base = Path(env).expanduser() if env else data_home / "recon" / handle
         primary = base / "scope" / "compiled_scope.json"
-    # Layer 2 hardening: mirror must honor $RHODAWK_HOME like every other
-    # runtime write (engine._data_home / hunt._bh_home contract), so an
-    # isolated sandbox never gets a stray ~/.rhodawk/scope tree.
-    home_env = os.environ.get("RHODAWK_HOME", "").strip()
-    mirror_home = Path(home_env).expanduser() if home_env else Path.home() / ".rhodawk"
-    mirror_dir = mirror_home / "scope"
+    mirror_dir = data_home / "scope"
     return {
         "primary": primary,
         "mirror": mirror_dir / f"{handle}_compiled_scope.json",

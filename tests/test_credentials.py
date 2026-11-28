@@ -444,11 +444,15 @@ class TestVerifyH1:
         monkeypatch.setattr(credentials, "_http_request", deny)
         assert credentials.verify_h1_auth("user", "token") == (401, "INVALID")
 
-    def test_network_error_is_invalid(self, monkeypatch):
+    def test_network_error_is_unreachable_not_invalid(self, monkeypatch):
+        """B-11: a network-level failure (DNS down, timeout, refused) must
+        NOT be reported as INVALID — the API never answered, so no verdict
+        exists. An offline operator must not be locked out of credentials
+        that would validate fine once connectivity returns."""
         def dead(url, headers, timeout):
             raise OSError("network down")
         monkeypatch.setattr(credentials, "_http_request", dead)
-        assert credentials.verify_h1_auth("user", "token") == (0, "INVALID")
+        assert credentials.verify_h1_auth("user", "token") == (0, "UNREACHABLE")
 
     def test_missing_parts_never_hit_network(self, monkeypatch):
         monkeypatch.setattr(credentials, "_http_request",

@@ -56,7 +56,7 @@ import textwrap
 from pathlib import Path
 try:
     from rhodawk._compat import get_env, ensure_home_migrated
-    from rhodawk.tools.credentials import redact_env_for_scanners
+    from rhodawk.tools.credentials import redact_env_for_scanners, safe_scanner_env
 except ImportError:  # flat / script execution — resolve package dir
     import os as _compat_os, sys as _compat_sys
     _compat_dir = _compat_os.path.abspath(__file__)
@@ -66,9 +66,9 @@ except ImportError:  # flat / script execution — resolve package dir
         _compat_sys.path.insert(0, _compat_dir)
     from _compat import get_env, ensure_home_migrated
     try:  # package layout (rhodawk/ on sys.path)
-        from tools.credentials import redact_env_for_scanners
+        from tools.credentials import redact_env_for_scanners, safe_scanner_env
     except ImportError:
-        from credentials import redact_env_for_scanners
+        from credentials import redact_env_for_scanners, safe_scanner_env
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 HERE     = Path(__file__).resolve().parent  # resolve symlink first so /usr/local/bin/rhodawk -> repo dir
@@ -774,8 +774,7 @@ def cmd_recon(args):
         # tools/hunt.py run_recon.
         # full_env=True + redaction: vault/platform/LLM secrets never reach
         # scanner subprocesses (mission fix 4); RECON_OUT_DIR still pinned.
-        child_env = {**redact_env_for_scanners(os.environ),
-                     "RECON_OUT_DIR": str(recon_dir)}
+        child_env = safe_scanner_env({"RECON_OUT_DIR": str(recon_dir)})
         if not getattr(args, "no_scope_check", False):
             child_env["SCOPE_ENFORCED"] = "1"
         success, output = _run_shell(["bash", str(script), target, *_scope_flag_args(args),
@@ -822,8 +821,7 @@ def cmd_hunt(args):
         # B2: scope-enforced mode whenever scoping is active (see cmd_recon).
         # full_env=True + redaction: vault/platform/LLM secrets never reach
         # scanner subprocesses (mission fix 4); RECON_OUT_DIR still pinned.
-        child_env = {**redact_env_for_scanners(os.environ),
-                     "RECON_OUT_DIR": str(recon_dir)}
+        child_env = safe_scanner_env({"RECON_OUT_DIR": str(recon_dir)})
         if not getattr(args, "no_scope_check", False):
             child_env["SCOPE_ENFORCED"] = "1"
         _rc_success, _rc_output = _run_shell(
@@ -841,14 +839,20 @@ def cmd_hunt(args):
     vuln_script = TOOLS / "vuln_scanner.sh"
     if vuln_script.exists() and recon_dir.exists():
         info("Phase 2: Vuln scan...")
-        # Layer 2 hardening: tools/_scope_gate.sh now fails closed when no
+        # Layer 2 hardening: tools/_scope_gate.sh fails closed when no
         # compiled manifest resolves. An explicit --no-scope-check hunt stays
         # a seamless authorized local-testing flow by propagating the opt-out
         # downstream (the gate still prints its visible bypass warning; a
         # tampered manifest still hard-stops).
-        if getattr(args, "no_scope_check", False):
-            os.environ["RHODAWK_SCOPE_UNSAFE"] = "1"
-        _run_shell(["bash", str(vuln_script), str(recon_dir)])
+        # B-5: the opt-out travels ONLY in the child env dict — mutating
+        # os.environ here leaked RHODAWK_SCOPE_UNSAFE=1 into every later
+        # subprocess of this same process (post-hunt AI analysis, MCP tools
+        # served from the same interpreter, ...).
+        vuln_env = safe_scanner_env(
+            {"RHODAWK_SCOPE_UNSAFE": "1"}
+            if getattr(args, "no_scope_check", False) else None)
+        _run_shell(["bash", str(vuln_script), str(recon_dir)],
+                   env=vuln_env, full_env=True)
 
     # AI analysis
     info("Phase 3: AI analysis...")

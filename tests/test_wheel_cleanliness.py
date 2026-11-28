@@ -64,19 +64,35 @@ class TestWheelCleanliness:
                                "assertion via tests/check_wheel_clean.py")
     def test_built_wheel_contains_no_runtime_artifacts(self, tmp_path):
         out_dir = tmp_path / "dist"
-        proc = subprocess.run(
-            [sys.executable, "-m", "build", "--wheel",
-             "--outdir", str(out_dir), str(REPO_ROOT)],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=600,
-        )
-        assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
-        wheels = sorted(out_dir.glob("*.whl"))
-        assert wheels, "python -m build produced no wheel"
-        proc2 = subprocess.run(
-            [sys.executable, str(CHECKER), *[str(w) for w in wheels]],
-            capture_output=True, text=True, timeout=120,
-        )
-        assert proc2.returncode == 0, proc2.stdout + proc2.stderr
+        # B-12: `python -m build` invokes setuptools with cwd=REPO_ROOT, which
+        # materializes build/ (and the egg-info) IN THE SOURCE TREE even with
+        # --outdir pointed at tmp_path. Running pytest must leave zero build/
+        # directory behind, so the in-tree droppings are removed in the
+        # finally block below.
+        in_tree_build = REPO_ROOT / "build"
+        in_tree_egg_info = REPO_ROOT / "rhodawk_bounty_hunter.egg-info"
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "build", "--wheel",
+                 "--outdir", str(out_dir), str(REPO_ROOT)],
+                cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=600,
+            )
+            assert proc.returncode == 0, \
+                proc.stdout[-2000:] + proc.stderr[-2000:]
+            wheels = sorted(out_dir.glob("*.whl"))
+            assert wheels, "python -m build produced no wheel"
+            proc2 = subprocess.run(
+                [sys.executable, str(CHECKER), *[str(w) for w in wheels]],
+                capture_output=True, text=True, timeout=120,
+            )
+            assert proc2.returncode == 0, proc2.stdout + proc2.stderr
+        finally:
+            import shutil
+
+            shutil.rmtree(in_tree_build, ignore_errors=True)
+            shutil.rmtree(in_tree_egg_info, ignore_errors=True)
+        assert not in_tree_build.exists(), \
+            "pytest must leave zero build/ directory in the source tree (B-12)"
 
 
 class TestSourceTreeNotPrePolluted:

@@ -16,8 +16,16 @@ from pathlib import Path
 from typing import Any
 
 _DIR = Path(__file__).resolve().parent
-_REPO = _DIR.parents[1]
-for p in (_DIR, _REPO):
+# B-2: _DIR.parents[1] is the rhodawk/ PACKAGE dir (the flat `memory.*` /
+# `tools.*` imports inside redact.py, adapters.py etc. resolve against it),
+# while parents[2] is the repository ROOT. Server.py used to treat the
+# package dir as "_REPO": on a plain clone (non-editable venv) the repo root
+# was never on sys.path, so `import rhodawk` stayed dead and
+# .claude-plugin/plugin.json was unresolvable — serverInfo.version fell back
+# to the stale "0.1.0". Both anchors go on sys.path.
+_PKG_DIR = _DIR.parents[1]
+_REPO = _DIR.parents[2]
+for p in (_DIR, _PKG_DIR, _REPO):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
@@ -42,13 +50,20 @@ _VERSION = "0.1.0"
 def _resolve_server_version() -> str:
     """serverInfo.version must report the real rhodawk package version.
 
-    Layer 2 live-sandbox finding: the previous resolution only read
-    .claude-plugin/plugin.json under _REPO — that file ships in a source
-    clone but NOT in a pip/pipx/uv install, so live `initialize` handshakes
-    on installed packages reported the hardcoded "0.1.0" fallback. Resolve
-    rhodawk.__version__ first (rhodawk/__init__.py is side-effect free, and
-    imports cleanly for installed packages), then the plugin manifest, then
-    the legacy literal as the last resort."""
+    Resolution order (B-2): importlib.metadata (pip/pipx/uv installs —
+    .claude-plugin/plugin.json does not ship in a wheel), then
+    rhodawk.__version__ (source runs; rhodawk/__init__.py is side-effect
+    free and _REPO now puts the repo root on sys.path even for a plain,
+    non-editable clone), then the plugin manifest, then the legacy literal
+    as the last resort."""
+    try:
+        from importlib.metadata import version as _md_version  # noqa: PLC0415
+
+        v = str(_md_version("rhodawk-bounty-hunter") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
     try:
         import rhodawk  # noqa: PLC0415
 
@@ -430,14 +445,25 @@ def rhodawk_list_findings(target: str, limit: int = 20) -> dict[str, Any]:
 def rhodawk_get_finding(target: str, path: str) -> dict[str, Any]:
     """Read a single finding artifact path under the data home (read-only, redacted).
 
-    `path` is relative to $RHODAWK_HOME (findings/<target>/... as returned by
-    rhodawk_list_findings). Runtime data never lives in the package install
-    tree (pre-launch audit G1), so resolving against _REPO would read a
-    directory the CLI/agent runtimes never write."""
+    `path` is relative to $RHODAWK_HOME and must stay inside the findings/,
+    recon/ or reports/ subtrees (as returned by rhodawk_list_findings).
+    B-9: generic data-home containment is NOT enough — `$RHODAWK_HOME/.env`
+    is the 0600 credential vault and `config.json` holds provider settings,
+    and the response redactor is a safety net, never the access-control
+    layer. Reads outside the artifact subtrees are denied outright."""
     base = adapters._data_home().resolve()
     full = (base / path).resolve()
     if full != base and base not in full.parents:
         return {"status": "denied", "error": "AUTHORIZATION_REQUIRED", "reason": "path escape"}
+    try:
+        rel = full.relative_to(base)
+    except ValueError:  # pragma: no cover - covered by the parents check above
+        return {"status": "denied", "error": "AUTHORIZATION_REQUIRED", "reason": "path escape"}
+    top = rel.parts[0] if rel.parts else ""
+    if top not in ("findings", "recon", "reports"):
+        return {"status": "denied", "error": "AUTHORIZATION_REQUIRED",
+                "reason": (f"read denied: '{top or '.'}' is not a finding "
+                           "artifact subtree (findings/ | recon/ | reports/)")}
     if not full.exists():
         return {"status": "completed", "summary": "not found", "path": path}
     text = full.read_text(encoding="utf-8", errors="replace")[:8000]

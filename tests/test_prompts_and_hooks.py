@@ -265,7 +265,10 @@ class TestHookScopeGuard:
         assert proc.returncode == 0, proc.stderr.decode()
 
     def test_allows_target_derived_manifest(self, tmp_path):
-        write_manifest(tmp_path, "shopify")
+        # B-4: target-derived discovery anchors to $RHODAWK_HOME (the conftest
+        # pins it per-test) — the manifest must be written THERE, not in the
+        # CWD: a planted working-directory manifest can no longer self-authorize.
+        write_manifest(Path(os.environ["RHODAWK_HOME"]), "shopify")
         proc = run_guard({"tool_name": "rhodawk_recon",
                           "tool_input": {"target": "shopify"}},
                          cwd=tmp_path)
@@ -289,7 +292,9 @@ class TestHookScopeGuard:
         assert proc.returncode == 0, proc.stderr.decode()
 
     def test_blocks_tampered_manifest(self, tmp_path):
-        manifest = write_manifest(tmp_path, "shopify")
+        # B-4: same data-home anchoring as the allow test — compile into
+        # $RHODAWK_HOME, then tamper in place.
+        manifest = write_manifest(Path(os.environ["RHODAWK_HOME"]), "shopify")
         # tamper: widen scope post-compilation without re-hashing
         data = json.loads(manifest.read_text(encoding="utf-8"))
         data["allow_patterns"] = ["*.evil.com"]

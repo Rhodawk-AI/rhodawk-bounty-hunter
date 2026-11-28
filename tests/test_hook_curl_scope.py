@@ -72,11 +72,32 @@ def test_in_scope_or_nonfetch_commands_allowed(tmp_path, cmd):
     assert proc.returncode == 0, f"unexpected block: {proc.stderr[-300:]}"
 
 
-def test_no_manifest_behavior_unchanged():
-    """Manifest-less sessions keep today's behavior (documented limitation):
-    curl is allowed without a block — installers/doctor Bash usage unaffected."""
-    proc = _run_hook("curl -s https://anything-at-all.example.test/x", manifest=None)
-    assert proc.returncode == 0
+def test_no_manifest_external_fetch_fails_closed(tmp_path):
+    """B-3 (audit): with NO resolvable manifest, a curl/wget to a NON-loopback
+    host now FAILS CLOSED (exit 2 + guidance) — the old documented-allow
+    behavior let a model probe arbitrary hosts with zero scope validation.
+    The explicit opt-in env var keeps authorized unscoped fetches possible."""
+    proc = _run_hook("curl -s https://anything-at-all.example.test/x",
+                     manifest=None)
+    assert proc.returncode == 2
+    assert "SCOPE_HOOK_BLOCK" in proc.stderr
+    assert "RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH=1" in proc.stderr
+
+
+def test_no_manifest_loopback_fetch_still_allowed():
+    """B-3: loopback fetches (local doctor/API servers) stay allowed without
+    a manifest, and the explicit opt-in env var re-opens external fetches."""
+    proc = _run_hook("curl -s http://127.0.0.1:8099/health", manifest=None)
+    assert proc.returncode == 0, proc.stderr[-300:]
+
+    env_cmd = "curl -s https://authorized-local-test.example.test/x"
+    payload = {"tool_name": "Bash", "tool_input": {"command": env_cmd}}
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp",
+           "RHODAWK_HOME": "/tmp/hooktest-home",
+           "RHODAWK_HOOK_ALLOW_UNSCOPED_FETCH": "1"}
+    proc2 = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                           capture_output=True, text=True, timeout=60, env=env)
+    assert proc2.returncode == 0, proc2.stderr[-300:]
 
 
 def test_tampered_manifest_does_not_authorize_curl(tmp_path):

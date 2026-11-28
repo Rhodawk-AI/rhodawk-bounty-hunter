@@ -42,21 +42,17 @@ except ImportError:  # flat / script execution — resolve package dir
         _compat_sys.path.insert(0, _compat_dir)
     from _compat import get_env, ensure_home_migrated
 
-# Official Google Antigravity OAuth 2.0 Installed-App public parameters
-_DEFAULT_CID = "".join((
-    "1071006060591",
-    "-",
-    "tmhssin2h21lcre2",
-    "35vtolojh4g403ep",
-    ".apps.",
-    "googleusercontent.com",
-))
-_DEFAULT_CSEC = "".join((
-    "GOCS",
-    "PX-",
-    "K58FWR486LdLJ1",
-    "mLB8sXC4z6qDAf",
-))
+# Official Google Antigravity OAuth 2.0 Installed-App public parameters.
+# B-10: spelled out as plain constants — the fragment assembly protected
+# nothing (the repo's only branding check scans for the retired product
+# NAME, never these values) and obscured the code. NOTE: in an OAuth
+# installed-app flow both values are PUBLIC by specification (the client
+# "secret" cannot be kept confidential in a desktop/CLI app); users override
+# both via RHODAWK_GOOGLE_CLIENT_ID / RHODAWK_GOOGLE_CLIENT_SECRET.
+_DEFAULT_CID = ("1071006060591-tmhssin2h21lcre2"
+                "35vtolojh4g403ep.apps.googleusercontent.com")
+_DEFAULT_CSEC = "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"
+
 
 # Audit G18: resolve through _compat.get_env so the pre-2.0 spellings
 # (BUGHUNTER_GOOGLE_CLIENT_ID/_SECRET, BBHUNT_*, ...) keep working — every

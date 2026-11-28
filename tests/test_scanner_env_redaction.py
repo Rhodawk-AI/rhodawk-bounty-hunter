@@ -19,6 +19,7 @@ Contract after the fix:
   - the caller's own environment dict is never mutated.
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -145,8 +146,159 @@ def test_engine_run_shell_full_env_replaces(monkeypatch, tmp_path):
     assert ok and "MISSING" in out
 
 
-def test_engine_cmd_recon_and_hunt_use_full_env():
-    """Both engine scanner-spawn sites opt into the redacted full env."""
-    src = (REPO / "rhodawk" / "engine.py").read_text(encoding="utf-8")
-    assert src.count("env=child_env, full_env=True") == 2  # cmd_recon + cmd_hunt
-    assert "redact_env_for_scanners" in src
+# ── B-1 runtime: every spawn path goes through safe_scanner_env() ────────────
+# The audit's B-1: the MCP adapters and the RTW delegation passed
+# os.environ.copy() (or nothing at all — inheriting the full server env) to
+# subprocesses, so vault/platform/LLM secrets leaked on those paths. These
+# tests stub each module's subprocess layer and inspect the EXACT env dict
+# the child would receive: synthetic H1_API_TOKEN / ANTHROPIC_API_KEY /
+# OPENAI_API_KEY must never appear; PATH / RHODAWK wiring must survive.
+
+_LEAK_TOKENS = {
+    "H1_API_TOKEN": "h1-synthetic-token",
+    "ANTHROPIC_API_KEY": "sk-ant-synthetic",
+    "OPENAI_API_KEY": "sk-openai-synthetic",
+}
+
+
+def _inject_secrets(monkeypatch):
+    for k, v in _LEAK_TOKENS.items():
+        monkeypatch.setenv(k, v)
+
+
+def _assert_no_secrets(env: dict, ctx: str):
+    assert env is not None, f"{ctx}: no child env captured"
+    for k in _LEAK_TOKENS:
+        assert k not in env, f"{ctx}: {k} leaked into child environment"
+    assert env.get("PATH"), f"{ctx}: PATH must survive redaction"
+
+
+def _capture_subprocess_run(monkeypatch, module, *, exc):
+    """Replace module.subprocess.run with an env-capturing stub that always
+    bails out through the module's own timeout handler. monkeypatch restores
+    the (shared, global) subprocess module after each test."""
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        raise exc
+
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+    return captured
+
+
+def test_mcp_adapters_run_recon_child_env_redacted(monkeypatch, tmp_path):
+    """B-1: adapters.run_recon used os.environ.copy() unredacted."""
+    import importlib.util
+    import subprocess as _subprocess
+
+    spec = importlib.util.spec_from_file_location(
+        "b1_mcp_adapters", REPO / "rhodawk" / "mcp" / "rhodawk-mcp" / "adapters.py")
+    adapters = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapters)
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rh"))
+    monkeypatch.setenv("RECON_OUT_DIR", str(tmp_path / "rh" / "recon"))
+    _inject_secrets(monkeypatch)
+    captured = _capture_subprocess_run(
+        monkeypatch, adapters, exc=_subprocess.TimeoutExpired(cmd=[], timeout=1))
+    out = adapters.run_recon("example.com")
+    assert out.get("status") == "failed"  # deterministic timeout bail-out
+    env = captured["env"]
+    _assert_no_secrets(env, "mcp adapters.run_recon")
+    # child-only overrides still present
+    assert env.get("RHODAWK_TARGET") == "example.com"
+    assert env.get("RECON_OUT_DIR") == \
+        str(tmp_path / "rh" / "recon" / "example.com")
+
+
+def test_mcp_adapters_run_hunt_fallback_env_redacted(monkeypatch, tmp_path):
+    """B-1: the run_hunt fallback spawned vuln_scanner.sh with NO env=
+    argument — the child inherited the FULL MCP server environment."""
+    import importlib.util
+    import subprocess as _subprocess
+
+    spec = importlib.util.spec_from_file_location(
+        "b1_mcp_adapters_h", REPO / "rhodawk" / "mcp" / "rhodawk-mcp" / "adapters.py")
+    adapters = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapters)
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rh"))
+    _inject_secrets(monkeypatch)
+    captured = _capture_subprocess_run(
+        monkeypatch, adapters, exc=_subprocess.TimeoutExpired(cmd=[], timeout=1))
+    from tools import hunt as hunt_mod
+    monkeypatch.setattr(hunt_mod, "hunt_target",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            TypeError("force engine-dispatch fallback")))
+    out = adapters.run_hunt("example.com")
+    assert out.get("status") == "failed"
+    _assert_no_secrets(captured["env"], "mcp adapters.run_hunt fallback")
+
+
+def test_rtw_adapter_delegation_env_redacted(monkeypatch, tmp_path):
+    """B-1: the reconFTW delegation used a raw os.environ.copy() default."""
+    from tools import rtw_adapter
+
+    monkeypatch.setenv("RHODAWK_HOME", str(tmp_path / "rh"))
+    _inject_secrets(monkeypatch)
+
+    recon_dir = tmp_path / "rh" / "recon" / "example.com"
+    recon_dir.mkdir(parents=True)
+    workdir_root = recon_dir / "rtw" / ".work"
+
+    fake_rtw = tmp_path / "fake-rtw"
+    fake_rtw.mkdir()
+    (fake_rtw / "reconftw.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    monkeypatch.setattr(rtw_adapter, "rtw_script",
+                        lambda: fake_rtw / "reconftw.sh")
+    monkeypatch.setattr(rtw_adapter, "_rtw_head_commit", lambda: None)
+    # a fresh checkout has no installed reconFTW deps state — an empty state
+    # map keeps Step 4 (RTW_MISSING_DEPS) from skipping before the spawn
+    monkeypatch.setattr(rtw_adapter, "load_state", lambda: {})
+    monkeypatch.setattr(rtw_adapter, "seed_files", lambda *a, **k: [])
+    monkeypatch.setattr(rtw_adapter, "write_override_cfg",
+                        lambda workdir, spec: str(workdir / "rtw_override.cfg"))
+    monkeypatch.setattr(rtw_adapter, "_snapshot_seed_lines",
+                        lambda workdir, seeded: [])
+    monkeypatch.setattr(rtw_adapter, "_bridge_recon_dir",
+                        lambda target, workdir: (None, None))
+    captured = _capture_subprocess_run(
+        monkeypatch, rtw_adapter,
+        exc=subprocess.TimeoutExpired(cmd=[], timeout=1))
+    cap_id = next(iter(rtw_adapter.CAPABILITIES))
+    out = rtw_adapter.run_capability(
+        cap_id, "example.com", recon_dir=recon_dir, allow_unscoped=True,
+        force=True, timeout_secs=30, workdir_root=workdir_root, env=None)
+    # the stub's TimeoutExpired routes through the delegation's timeout
+    # handler — proving the spawn was reached and its env captured
+    assert out.get("status") == "TIMEOUT", out
+    _assert_no_secrets(captured["env"], "rtw_adapter delegation")
+    # an explicit caller-supplied env is still honored verbatim (contract)
+    explicit_env = {"PATH": "/bin", "CUSTOM": "1"}
+    captured2 = _capture_subprocess_run(
+        monkeypatch, rtw_adapter,
+        exc=subprocess.TimeoutExpired(cmd=[], timeout=1))
+    rtw_adapter.run_capability(
+        cap_id, "example.com", recon_dir=recon_dir, allow_unscoped=True,
+        force=True, timeout_secs=30, workdir_root=workdir_root,
+        env=explicit_env)
+    assert captured2["env"].get("CUSTOM") == "1"
+
+def test_engine_and_hunt_spawn_sites_use_shared_builder():
+    """Every scanner spawn site routes through safe_scanner_env() (B-1):
+    behavior is covered by the runtime tests above and in
+    test_audit_b1_b12_fixes.py; this pins that no site still builds a child
+    env by hand (the old {**redact_env_for_scanners(os.environ), ...} or
+    bare os.environ.copy() patterns)."""
+    engine_src = (REPO / "rhodawk" / "engine.py").read_text(encoding="utf-8")
+    assert "safe_scanner_env" in engine_src
+    assert "{**redact_env_for_scanners(os.environ)" not in engine_src
+    assert 'os.environ["RHODAWK_SCOPE_UNSAFE"]' not in engine_src  # B-5
+    hunt_src = (REPO / "rhodawk" / "tools" / "hunt.py").read_text(encoding="utf-8")
+    assert hunt_src.count("safe_scanner_env()") >= 4
+    adapters_src = (REPO / "rhodawk" / "mcp" / "rhodawk-mcp" /
+                    "adapters.py").read_text(encoding="utf-8")
+    assert "os.environ.copy()" not in adapters_src.split("def _safe_scanner_env")[0]
+    rtw_src = (REPO / "rhodawk" / "tools" / "rtw_adapter.py").read_text(
+        encoding="utf-8")
+    assert "safe_scanner_env()" in rtw_src

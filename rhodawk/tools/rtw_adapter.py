@@ -123,6 +123,13 @@ except ImportError:  # pragma: no cover - scope_checker always ships with the fo
     ScopeChecker = None
     ScopeError = Exception
 
+# B-1: the reconFTW delegation must never receive vault/platform/LLM secrets.
+try:
+    from tools.credentials import safe_scanner_env  # noqa: E402
+except ImportError:  # pragma: no cover
+    from rhodawk.tools.credentials import safe_scanner_env  # noqa: E402
+
+
 try:
     from memory.audit_log import AuditLog  # noqa: E402
     from memory.schemas import make_audit_entry  # noqa: E402
@@ -261,12 +268,16 @@ def build_scope_checker(domains: List[str], excluded: List[str]):
 
 
 def load_scope_from_config() -> Tuple[List[str], List[str]]:
-    """Load scope patterns from ~/.rhodawk/config.json (keys:
+    """Load scope patterns from <data_home>/config.json (keys:
     scope_domains / scope_excluded_domains), so harness and ReAct runtimes
-    inherit the program scope Rhodawk already knows about."""
+    inherit the program scope Rhodawk already knows about.
+
+    B-6: resolves through data_home() (honoring $RHODAWK_HOME) instead of
+    hardcoding Path.home() / ".rhodawk" — same contract as every other
+    runtime read; blank-container testing never falls back to the real home."""
     try:
         config = json.loads(
-            (Path.home() / ".rhodawk" / "config.json").read_text(encoding="utf-8"))
+            (data_home() / "config.json").read_text(encoding="utf-8"))
         domains = config.get("scope_domains") or []
         excluded = config.get("scope_excluded_domains") or []
         if isinstance(domains, list) and isinstance(excluded, list):
@@ -886,7 +897,10 @@ def run_capability(capability_id: str, target: str,
 
     argv = build_cli_command(spec, target, workdir, cfg)
 
-    child_env = env or os.environ.copy()
+    # B-1: explicit caller-supplied env is honored as-is; the default is now
+    # the redacted shared builder instead of a raw os.environ.copy() (vault /
+    # platform / LLM secrets must never reach the reconFTW delegation).
+    child_env = env if env is not None else safe_scanner_env()
     # Live-run fix: reconftw.sh resolves its lib/ + modules/ base from
     # $SCRIPTPATH. When the invoking shell carried a stale SCRIPTPATH (or
     # reconFTW's compiled-in default /opt/reconftw), sub_permut and
